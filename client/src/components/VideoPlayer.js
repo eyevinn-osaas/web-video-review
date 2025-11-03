@@ -33,34 +33,35 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking }
           enableWorker: true,
           lowLatencyMode: false,
           backBufferLength: 30,
-          maxBufferLength: 120, // Increase buffer length for slow-encoding videos
-          maxMaxBufferLength: 180, // Even larger max buffer
-          maxBufferSize: 120 * 1000 * 1000, // Doubled buffer size
-          maxBufferHole: 1.0, // Allow larger buffer holes
-          highBufferWatchdogPeriod: 5, // Less aggressive buffer watchdog
-          nudgeOffset: 0.1,
-          nudgeMaxRetry: 6, // More retries for nudging
-          maxFragLookUpTolerance: 0.5, // More tolerance for fragment lookup
-          liveSyncDurationCount: 3,
-          liveMaxLatencyDurationCount: 10,
+          maxBufferLength: 30, // Reduced for real-time encoding
+          maxMaxBufferLength: 60, // Smaller max buffer for faster startup
+          maxBufferSize: 60 * 1000 * 1000, // Reduced buffer size
+          maxBufferHole: 2.0, // Allow larger buffer holes for encoding delays
+          highBufferWatchdogPeriod: 10, // More lenient buffer watchdog
+          nudgeOffset: 0.5, // Larger nudge offset for timing issues
+          nudgeMaxRetry: 3, // Fewer retries to prevent stalls
+          maxFragLookUpTolerance: 1.0, // More tolerance for fragment lookup
+          liveSyncDurationCount: 1, // Reduce sync requirements
+          liveMaxLatencyDurationCount: 3, // Lower latency requirements
           liveDurationInfinity: false,
           enableSoftwareAES: true,
-          manifestLoadingTimeOut: 45000, // Longer manifest timeout
-          manifestLoadingMaxRetry: 4, // More manifest retries
-          manifestLoadingRetryDelay: 3000, // Longer retry delay
-          levelLoadingTimeOut: 45000, // Longer level timeout
-          levelLoadingMaxRetry: 5, // More level retries
-          levelLoadingRetryDelay: 3000, // Longer retry delay
-          fragLoadingTimeOut: 120000, // Much longer fragment timeout for slow segments
-          fragLoadingMaxRetry: 6, // More fragment retries
-          fragLoadingRetryDelay: 5000, // Longer fragment retry delay
-          startFragPrefetch: true,
-          testBandwidth: true,
-          abrEwmaFastLive: 3.0, // More conservative ABR
-          abrEwmaSlowLive: 9.0,
-          abrMaxWithRealBitrate: false, // Disable real bitrate ABR to avoid switching
-          maxStarvationDelay: 8, // Allow longer starvation before giving up
-          maxLoadingDelay: 8 // Allow longer loading delay
+          manifestLoadingTimeOut: 30000, // Reasonable manifest timeout
+          manifestLoadingMaxRetry: 3, // Fewer manifest retries
+          manifestLoadingRetryDelay: 2000, // Shorter retry delay
+          levelLoadingTimeOut: 30000, // Reasonable level timeout
+          levelLoadingMaxRetry: 3, // Fewer level retries
+          levelLoadingRetryDelay: 2000, // Shorter retry delay
+          fragLoadingTimeOut: 20000, // Extended timeout for MXF and complex files
+          fragLoadingMaxRetry: 3, // Fewer fragment retries to prevent cascade failures
+          fragLoadingRetryDelay: 2000, // Reasonable retry delay
+          startFragPrefetch: false, // Disable prefetch for real-time encoding
+          testBandwidth: false, // Disable bandwidth testing
+          abrEwmaFastLive: 5.0, // More conservative ABR for real-time
+          abrEwmaSlowLive: 15.0, // Very conservative ABR
+          abrMaxWithRealBitrate: false, // Disable real bitrate ABR
+          maxStarvationDelay: 25, // Extended starvation delay for MXF files
+          maxLoadingDelay: 25, // Extended loading delay for MXF files
+          startPosition: 0 // Start from beginning instead of live edge
         });
         
         hlsRef.current = hls;
@@ -82,15 +83,21 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking }
             ? data.stats.loading.end - data.stats.loading.start 
             : 'unknown';
           console.log('Fragment loaded:', data.frag.relurl, 'in', loadTime, 'ms');
+          console.log('Fragment details:', {
+            start: data.frag.start,
+            end: data.frag.end,
+            duration: data.frag.duration,
+            sn: data.frag.sn
+          });
           
-          // Track loaded fragments and implement buffering strategy
+          // Track loaded fragments and implement buffering strategy for real-time encoding
           setLoadedFragments(prev => {
             const newCount = prev + 1;
             console.log(`Loaded fragments: ${newCount}`);
             
-            // Wait for 2 fragments before allowing playback
-            if (newCount >= 2 && isBuffering) {
-              console.log('Sufficient buffer available, ready for playback');
+            // Wait for 3 fragments before allowing playback for real-time encoding
+            if (newCount >= 3 && isBuffering) {
+              console.log('Sufficient buffer available for real-time encoding, ready for playback');
               setIsBuffering(false);
             }
             
@@ -98,8 +105,76 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking }
           });
         });
         
+        // Add buffer state monitoring
+        hls.on(Hls.Events.BUFFER_APPENDED, (event, data) => {
+          console.log('Buffer appended:', {
+            type: data.type,
+            timeRanges: data.timeRanges
+          });
+          
+          // Check for buffer gaps that might cause stalls
+          if (video.buffered.length > 0) {
+            const currentTime = video.currentTime;
+            let hasGap = false;
+            
+            for (let i = 0; i < video.buffered.length - 1; i++) {
+              const gapStart = video.buffered.end(i);
+              const gapEnd = video.buffered.start(i + 1);
+              const gapSize = gapEnd - gapStart;
+              
+              if (gapSize > 0.1 && currentTime >= gapStart - 1 && currentTime <= gapEnd + 1) {
+                console.warn(`Buffer gap detected: ${gapStart.toFixed(2)}s - ${gapEnd.toFixed(2)}s (${gapSize.toFixed(2)}s gap) near currentTime: ${currentTime.toFixed(2)}s`);
+                hasGap = true;
+              }
+            }
+            
+            if (!hasGap) {
+              console.log(`Buffer continuous from ${video.buffered.start(0).toFixed(2)}s to ${video.buffered.end(video.buffered.length - 1).toFixed(2)}s`);
+            }
+          }
+        });
+        
         hls.on(Hls.Events.ERROR, (event, data) => {
           console.error('HLS error:', data);
+          
+          // Enhanced buffer stall handling for MXF files
+          if (data.details === 'bufferStalledError') {
+            console.log('Buffer stalled error detected, analyzing buffer state...');
+            
+            if (video.buffered.length > 0) {
+              console.log('Current buffer ranges:');
+              for (let i = 0; i < video.buffered.length; i++) {
+                console.log(`  Range ${i}: ${video.buffered.start(i).toFixed(2)}s - ${video.buffered.end(i).toFixed(2)}s`);
+              }
+              console.log(`Current time: ${video.currentTime.toFixed(2)}s`);
+              
+              // Try to recover by seeking slightly forward if we're near a buffer gap
+              const currentTime = video.currentTime;
+              let nearestBufferStart = null;
+              
+              for (let i = 0; i < video.buffered.length; i++) {
+                const bufferStart = video.buffered.start(i);
+                const bufferEnd = video.buffered.end(i);
+                
+                if (bufferStart > currentTime && (nearestBufferStart === null || bufferStart < nearestBufferStart)) {
+                  nearestBufferStart = bufferStart;
+                }
+              }
+              
+              if (nearestBufferStart !== null && nearestBufferStart - currentTime < 2) {
+                console.log(`Attempting recovery by seeking to ${nearestBufferStart.toFixed(2)}s`);
+                video.currentTime = nearestBufferStart + 0.1;
+                return;
+              }
+            }
+            
+            // For non-fatal buffer stalls, try reloading
+            if (!data.fatal) {
+              console.log('Attempting buffer stall recovery...');
+              hls.startLoad();
+              return;
+            }
+          }
           
           // Don't treat internal exceptions as fatal unless they truly are
           if (data.details === 'internalException' && !data.fatal) {
@@ -319,7 +394,7 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking }
           textAlign: 'center',
           borderTop: '1px solid #3a3a3a'
         }}>
-          ⏳ Buffering... ({loadedFragments}/2 chunks loaded)
+          ⏳ Buffering... ({loadedFragments}/3 chunks loaded)
         </div>
       )}
     </div>
