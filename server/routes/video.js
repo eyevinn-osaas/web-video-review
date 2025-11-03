@@ -234,9 +234,64 @@ router.get('/:key/thumbnails', async (req, res) => {
   }
 });
 
+// Route for individual thumbnail files (e.g., thumb000.jpg, thumb001.jpg)
+router.get('/:key/thumb:thumbFile', async (req, res) => {
+  try {
+    const key = decodeURIComponent(req.params.key);
+    const thumbFile = req.params.thumbFile; // e.g., "000.jpg"
+    
+    // Extract thumbnail index from filename (e.g., "000.jpg" -> 0)
+    const match = thumbFile.match(/(\d+)\.jpg$/);
+    if (!match) {
+      return res.status(400).json({ error: 'Invalid thumbnail filename format' });
+    }
+    
+    const thumbIndex = parseInt(match[1]);
+    
+    // Check if we have native HLS cache with thumbnails
+    if (videoService.nativeHlsCache && videoService.nativeHlsCache.has(key)) {
+      const hlsCacheEntry = videoService.nativeHlsCache.get(key);
+      const thumbnailPath = path.join(hlsCacheEntry.tempDir, `thumb${thumbIndex.toString().padStart(3, '0')}.jpg`);
+      
+      if (fs.existsSync(thumbnailPath)) {
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        
+        console.log(`[Route] Serving native HLS thumbnail: ${key}/thumb${thumbFile}`);
+        return fs.createReadStream(thumbnailPath).pipe(res);
+      }
+    }
+    
+    // Fallback: thumbnail not found
+    res.status(404).json({ error: 'Thumbnail not found' });
+    
+  } catch (error) {
+    console.error('Error serving thumbnail:', error);
+    res.status(500).json({ error: 'Failed to serve thumbnail' });
+  }
+});
+
 router.get('/:key/thumbnail', async (req, res) => {
-  // Thumbnail generation disabled for performance
-  res.status(501).json({ error: 'Thumbnail generation disabled' });
+  // Legacy single thumbnail endpoint - now redirects to thumbnails list
+  try {
+    const key = decodeURIComponent(req.params.key);
+    const { segmentDuration = 10 } = req.query;
+    
+    const thumbnails = await videoService.getSegmentThumbnails(key, parseInt(segmentDuration));
+    
+    // Return the first available thumbnail or a 404
+    const firstThumbnail = thumbnails.find(t => t.data !== null);
+    if (firstThumbnail) {
+      res.json(firstThumbnail);
+    } else {
+      res.status(404).json({ error: 'No thumbnails available yet' });
+    }
+    
+  } catch (error) {
+    console.error('Error getting thumbnail:', error);
+    res.status(500).json({ error: 'Failed to get thumbnail' });
+  }
 });
 
 router.get('/:key/seek', async (req, res) => {

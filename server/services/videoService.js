@@ -498,6 +498,7 @@ class VideoService {
     
     const playlistPath = path.join(tempDir, 'playlist.m3u8');
     const segmentPattern = path.join(tempDir, 'segment%03d.ts');
+    const thumbnailPattern = path.join(tempDir, 'thumb%03d.jpg');
     
     // Get input source - request enough data for initial segments (30 seconds worth)
     let inputSource;
@@ -573,7 +574,7 @@ class VideoService {
       '-vsync', 'cfr'
     );
     
-    // Native Live HLS settings
+    // First output: Native Live HLS settings
     ffmpegArgs.push(
       '-f', 'hls',
       '-hls_time', segmentDuration.toString(),
@@ -583,6 +584,16 @@ class VideoService {
       '-force_key_frames', `expr:gte(t,n_forced*${segmentDuration})`,
       '-hls_segment_filename', segmentPattern,
       playlistPath
+    );
+    
+    // Second output: Thumbnail generation
+    ffmpegArgs.push(
+      '-map', hasAudio ? '0:v:0' : '1:v:0', // Map video stream for thumbnails
+      '-vf', `fps=1/${segmentDuration},scale=320:180`, // One thumbnail per segment, scaled down
+      '-q:v', '3', // High quality for thumbnails
+      '-f', 'image2',
+      '-y', // Overwrite existing files
+      thumbnailPattern
     );
     
     console.log(`[Native Live HLS] FFmpeg command: ffmpeg ${ffmpegArgs.join(' ')}`);
@@ -625,7 +636,18 @@ class VideoService {
       }, 3000); // Resolve after 3 seconds if playlist exists
       
       ffmpeg.stderr.on('data', (data) => {
-        stderr += data.toString();        
+        stderr += data.toString();
+        
+        // Check for segment and thumbnail creation in stderr output
+        const segmentMatch = stderr.match(/Opening.*segment(\d+)\.ts/);
+        if (segmentMatch) {
+          console.log(`[Native Live HLS] Segment ${segmentMatch[1]} being created`);
+        }
+        
+        const thumbMatch = stderr.match(/Writing application.*thumb(\d+)\.jpg/);
+        if (thumbMatch) {
+          console.log(`[Native Live HLS] Thumbnail ${thumbMatch[1]} being created`);
+        }
       });
       
       ffmpeg.on('close', async (code) => {
@@ -1196,19 +1218,51 @@ class VideoService {
       const segmentCount = Math.ceil(info.duration / segmentDuration);
       const thumbnails = [];
       
+      // Check if we have native HLS cache with thumbnails
+      const hlsCacheEntry = this.nativeHlsCache && this.nativeHlsCache.get(s3Key);
+      
       for (let i = 0; i < segmentCount; i++) {
-        const thumbnailKey = `${s3Key}:${i}:${segmentDuration}`;
-        if (this.thumbnailCache.has(thumbnailKey)) {
-          thumbnails.push(this.thumbnailCache.get(thumbnailKey));
-        } else {
-          // Return placeholder for segments that haven't been loaded yet
-          thumbnails.push({
-            segmentIndex: i,
-            time: i * segmentDuration + (segmentDuration / 2),
-            data: null,
-            cached: null
-          });
+        let thumbnailData = null;
+        
+        // First, try to get thumbnail from native HLS generation
+        if (hlsCacheEntry) {
+          const thumbnailPath = path.join(hlsCacheEntry.tempDir, `thumb${i.toString().padStart(3, '0')}.jpg`);
+          if (fsSync.existsSync(thumbnailPath)) {
+            try {
+              const thumbnailBuffer = fsSync.readFileSync(thumbnailPath);
+              const base64Data = thumbnailBuffer.toString('base64');
+              thumbnailData = {
+                segmentIndex: i,
+                time: i * segmentDuration + (segmentDuration / 2),
+                data: `data:image/jpeg;base64,${base64Data}`,
+                cached: Date.now(),
+                source: 'native-hls'
+              };
+              console.log(`[Thumbnails] Using native HLS thumbnail for segment ${i}`);
+            } catch (error) {
+              console.warn(`[Thumbnails] Failed to read native thumbnail ${i}:`, error.message);
+            }
+          }
         }
+        
+        // Fallback to cache or placeholder
+        if (!thumbnailData) {
+          const thumbnailKey = `${s3Key}:${i}:${segmentDuration}`;
+          if (this.thumbnailCache.has(thumbnailKey)) {
+            thumbnailData = this.thumbnailCache.get(thumbnailKey);
+          } else {
+            // Return placeholder for segments that haven't been loaded yet
+            thumbnailData = {
+              segmentIndex: i,
+              time: i * segmentDuration + (segmentDuration / 2),
+              data: null,
+              cached: null,
+              source: 'placeholder'
+            };
+          }
+        }
+        
+        thumbnails.push(thumbnailData);
       }
       
       return thumbnails;
