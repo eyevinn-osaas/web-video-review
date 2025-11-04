@@ -301,9 +301,40 @@ class VideoService {
 
   async checkSufficientDataForDuration(s3Key, localPath, requiredDuration) {
     try {
-      // Get video info to calculate if we have enough data
-      const videoInfo = await this.getVideoInfo(s3Key);
-      const videoBitrate = videoInfo.bitrate || videoInfo.video?.bitrate || 5000000; // 5Mbps fallback
+      // Use cached video info to avoid race conditions and repeated calls
+      const videoInfoCacheKey = `videoInfo:${s3Key}`;
+      let videoInfo;
+      
+      if (!this.videoInfoCache) {
+        this.videoInfoCache = new Map();
+      }
+      
+      if (this.videoInfoCache.has(videoInfoCacheKey)) {
+        videoInfo = this.videoInfoCache.get(videoInfoCacheKey);
+      } else {
+        videoInfo = await this.getVideoInfo(s3Key);
+        this.videoInfoCache.set(videoInfoCacheKey, videoInfo);
+        
+        // Clean up video info cache after 1 hour
+        setTimeout(() => {
+          this.videoInfoCache.delete(videoInfoCacheKey);
+        }, 60 * 60 * 1000);
+      }
+      
+      // More robust bitrate detection with better fallbacks
+      let videoBitrate = 0;
+      if (videoInfo.bitrate && videoInfo.bitrate > 0) {
+        videoBitrate = videoInfo.bitrate;
+      } else if (videoInfo.video?.bitrate && videoInfo.video.bitrate > 0) {
+        videoBitrate = videoInfo.video.bitrate;
+      } else if (videoInfo.size && videoInfo.duration) {
+        // Calculate bitrate from file size and duration as fallback
+        videoBitrate = Math.floor((videoInfo.size * 8) / videoInfo.duration);
+      } else {
+        // Conservative fallback for unknown bitrate
+        videoBitrate = 8000000; // 8Mbps fallback (higher for safety)
+      }
+      
       const totalSize = videoInfo.size;
       
       // Check current file size
@@ -311,14 +342,14 @@ class VideoService {
       const currentSize = stats.size;
       
       // Calculate bytes needed for the duration with buffer for encoding overhead
-      const bufferMultiplier = 1.5; // 50% extra buffer
+      const bufferMultiplier = 2.0; // 100% extra buffer for safety
       const bytesPerSecond = videoBitrate / 8; // Convert bits to bytes
       const requiredBytes = Math.ceil(requiredDuration * bytesPerSecond * bufferMultiplier);
       const bytesNeeded = Math.min(requiredBytes, totalSize);
       
       const hasEnough = currentSize >= bytesNeeded;
       
-      console.log(`[Data Check] Video: ${(videoBitrate/1000000).toFixed(1)}Mbps, Current: ${(currentSize/1024/1024).toFixed(1)}MB, needed for ${requiredDuration}s: ${(bytesNeeded/1024/1024).toFixed(1)}MB, sufficient: ${hasEnough}`);
+      console.log(`[Data Check] Video: ${(videoBitrate/1000000).toFixed(1)}Mbps (${videoInfo.bitrate ? 'format' : videoInfo.video?.bitrate ? 'stream' : 'calculated'}), Current: ${(currentSize/1024/1024).toFixed(1)}MB, needed for ${requiredDuration}s: ${(bytesNeeded/1024/1024).toFixed(1)}MB, sufficient: ${hasEnough}`);
       
       return hasEnough;
     } catch (error) {
@@ -364,6 +395,17 @@ class VideoService {
 
   async getVideoInfo(s3Key) {
     try {
+      // Check cache first to avoid repeated ffprobe calls
+      const videoInfoCacheKey = `videoInfo:${s3Key}`;
+      
+      if (!this.videoInfoCache) {
+        this.videoInfoCache = new Map();
+      }
+      
+      if (this.videoInfoCache.has(videoInfoCacheKey)) {
+        return this.videoInfoCache.get(videoInfoCacheKey);
+      }
+      
       const signedUrl = s3Service.getSignedUrl(s3Key, 3600);
       
       return new Promise((resolve, reject) => {
@@ -395,6 +437,14 @@ class VideoService {
               bitrate: parseInt(audioStream.bit_rate) || 0
             } : null
           };
+          
+          // Cache the video info for future use
+          this.videoInfoCache.set(videoInfoCacheKey, info);
+          
+          // Clean up video info cache after 1 hour
+          setTimeout(() => {
+            this.videoInfoCache.delete(videoInfoCacheKey);
+          }, 60 * 60 * 1000);
           
           resolve(info);
         });
@@ -831,31 +881,16 @@ class VideoService {
     console.log(`[Segment ${segmentIndex}] Starting chunk creation at time ${startTime}s for ${segmentDuration}s duration`);
     console.log(`[Segment ${segmentIndex}] Video key: ${s3Key}`);
     
-    // Get video info to check for audio streams - cache this per video to maintain consistency
-    const videoInfoCacheKey = `videoInfo:${s3Key}`;
+    // Get video info to check for audio streams - use existing cached info
     let hasAudio = true;
     let videoInfo = null;
     
-    if (!this.videoInfoCache) {
-      this.videoInfoCache = new Map();
-    }
-    
-    if (this.videoInfoCache.has(videoInfoCacheKey)) {
-      videoInfo = this.videoInfoCache.get(videoInfoCacheKey);
+    try {
+      // This will use the cache if available
+      videoInfo = await this.getVideoInfo(s3Key);
       hasAudio = videoInfo.audio !== null;
-    } else {
-      try {
-        videoInfo = await this.getVideoInfo(s3Key);
-        hasAudio = videoInfo.audio !== null;
-        this.videoInfoCache.set(videoInfoCacheKey, videoInfo);
-        
-        // Clean up video info cache after 1 hour
-        setTimeout(() => {
-          this.videoInfoCache.delete(videoInfoCacheKey);
-        }, 60 * 60 * 1000);
-      } catch (error) {
-        console.log('Could not get video info, assuming audio present:', error.message);
-      }
+    } catch (error) {
+      console.log('Could not get video info, assuming audio present:', error.message);
     }
     
     // Apply frame-accurate timing for precise segment alignment
