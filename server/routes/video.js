@@ -99,8 +99,9 @@ router.get('/:key/stream', async (req, res) => {
 router.get('/:key/playlist.m3u8', async (req, res) => {
   try {
     const key = decodeURIComponent(req.params.key);
-    const { segmentDuration = 10, goniometer = 'true' } = req.query;
+    const { segmentDuration = 10, goniometer = 'true', ebuR128 = 'false' } = req.query;
     const showGoniometer = goniometer === 'true' || goniometer === '1';
+    const showEbuR128 = ebuR128 === 'true' || ebuR128 === '1';
     
     // Check if we have existing HLS cache
     let playlist;
@@ -123,7 +124,7 @@ router.get('/:key/playlist.m3u8', async (req, res) => {
     
     if (!playlist) {
       // Generate initial HLS data and wait for initial segments
-      const hlsData = await videoService.generateHLSSegments(key, parseInt(segmentDuration), { showGoniometer });
+      const hlsData = await videoService.generateHLSSegments(key, parseInt(segmentDuration), { showGoniometer, showEbuR128 });
       playlist = hlsData.playlist;
       
       // Wait for initial segments to be created before returning playlist
@@ -261,6 +262,20 @@ router.get('/:key/waveform', async (req, res) => {
   } catch (error) {
     console.error('Error getting audio waveform:', error);
     res.status(500).json({ error: 'Failed to get audio waveform' });
+  }
+});
+
+router.get('/:key/ebu-r128', async (req, res) => {
+  try {
+    const key = decodeURIComponent(req.params.key);
+    const { startTime = 0, duration = 10 } = req.query;
+    
+    const measurements = await videoService.getEbuR128Analysis(key, parseFloat(startTime), parseFloat(duration));
+    res.json(measurements);
+    
+  } catch (error) {
+    console.error('Error getting EBU R128 analysis:', error);
+    res.status(500).json({ error: 'Failed to get EBU R128 analysis' });
   }
 });
 

@@ -541,8 +541,8 @@ class VideoService {
 
 
   async generateNativeLiveHLS(s3Key, segmentDuration = 10, options = {}) {
-    const { showGoniometer = true } = options;
-    const cacheKey = `nativehls:${s3Key}:${segmentDuration}:${showGoniometer ? 'gonio' : 'normal'}`;
+    const { showGoniometer = true, showEbuR128 = false } = options;
+    const cacheKey = `nativehls:${s3Key}:${segmentDuration}:${showGoniometer ? 'gonio' : 'normal'}:${showEbuR128 ? 'r128' : 'noR128'}`;
     
     // Check if native HLS is already being generated
     if (this.activeProcesses.has(cacheKey)) {
@@ -567,7 +567,7 @@ class VideoService {
   }
 
   async _generateNativeLiveHLSInternal(s3Key, segmentDuration = 10, options = {}) {
-    const { showGoniometer = true } = options;
+    const { showGoniometer = true, showEbuR128 = false } = options;
     // Get video info for duration calculation
     const videoInfo = await this.getVideoInfo(s3Key);
     const hasAudio = videoInfo.audio !== null;
@@ -731,12 +731,13 @@ class VideoService {
     let videoFilterChain = '';
     let goniometerFilter = '';
     let stereoFilter = '';
+    let ebuR128Filter = '';
     
     // Create stereo filter if needed for mono combinations
     if (hasMonoCombination) {
       const combo = videoInfo.monoStreamCombinations;
       if (showGoniometer && hasAudio) {
-        // Need to split stereo output for both goniometer and audio mapping
+        // Need to split stereo output for goniometer and audio mapping
         stereoFilter = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo_temp];[stereo_temp]asplit=2[stereo0][stereo_gonio]`;
       } else {
         // Only need stereo for audio mapping
@@ -744,6 +745,7 @@ class VideoService {
       }
     }
     
+    // Setup goniometer filter if enabled
     if (showGoniometer && hasAudio) {
       if (hasMonoCombination) {
         // Use split stereo for goniometer
@@ -752,10 +754,17 @@ class VideoService {
         // Use first audio stream for goniometer
         goniometerFilter = `[0:a]avectorscope=size=300x300:zoom=1.5:draw=line:rf=30:gf=30:bf=30[gonio]`;
       }
-      videoFilterChain = `[${videoInputForFilter}]split=2[v1][v2];[v1]setpts=PTS-STARTPTS,scale=1280:720[v1scaled];[gonio]scale=300:300[goniosized];[v1scaled][goniosized]overlay=w-w-20:h-h-50,drawtext=text='%{pts\\:hms}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10[hls]`;
+    }
+    
+    // EBU R128 is now handled separately - no video overlay needed
+    
+    // Build video filter chain with overlays
+    if (showGoniometer && hasAudio) {
+      let baseVideo = `[${videoInputForFilter}]split=2[v1][v2];[v1]setpts=PTS-STARTPTS,scale=1280:720[v1scaled]`;
+      baseVideo += `;[gonio]scale=300:300[goniosized];[v1scaled][goniosized]overlay=w-w-20:h-h-50[v1final]`;
+      videoFilterChain = baseVideo + `;[v1final]drawtext=text='%{pts\\:hms}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10[hls]`;
     } else {
-      // No goniometer for videos without audio or when disabled
-      goniometerFilter = '';
+      // No overlays for videos without audio or when disabled
       videoFilterChain = `[${videoInputForFilter}]split=2[v1][v2];[v1]setpts=PTS-STARTPTS,scale=1280:720,drawtext=text='%{pts\\:hms}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10[hls]`;
     }
     
@@ -1643,6 +1652,146 @@ class VideoService {
         reject(error);
       });
     });
+  }
+
+  async getEbuR128Analysis(s3Key, startTime = 0, duration = 10) {
+    try {
+      const videoInfo = await this.getVideoInfo(s3Key);
+      const hasAudio = videoInfo.audio !== null;
+      
+      if (!hasAudio) {
+        throw new Error('No audio streams found in video');
+      }
+
+      // Try to use local cached file first, fallback to signed URL
+      let inputSource = null;
+      try {
+        inputSource = await this.ensureLocalFile(s3Key, duration, startTime);
+        if (inputSource && require('fs').existsSync(inputSource)) {
+          console.log(`[EBU R128] Using cached file: ${inputSource}`);
+        } else {
+          inputSource = null;
+        }
+      } catch (error) {
+        console.warn(`[EBU R128] Failed to get cached file, using S3 URL:`, error.message);
+        inputSource = null;
+      }
+      
+      // Fallback to signed URL if no cached file
+      if (!inputSource) {
+        inputSource = s3Service.getSignedUrl(s3Key, 3600);
+        console.log(`[EBU R128] Using S3 signed URL: ${inputSource.substring(0, 100)}...`);
+      }
+      
+      // Determine audio input for analysis
+      let audioInput = '-i';
+      const hasMonoCombination = hasAudio && videoInfo.audioStreams && videoInfo.audioStreams.length > 0 && 
+                                  videoInfo.monoStreamCombinations && videoInfo.monoStreamCombinations.canCombineFirstTwo;
+      
+      let filterComplex = '';
+      if (hasMonoCombination) {
+        const combo = videoInfo.monoStreamCombinations;
+        filterComplex = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo];[stereo]ebur128=framelog=verbose`;
+      } else {
+        filterComplex = `[0:a]ebur128=framelog=verbose`;
+      }
+
+      const ffmpegArgs = [
+        '-fflags', '+genpts+igndts',
+        '-avoid_negative_ts', 'make_zero',
+        '-ss', startTime.toString(),
+        '-t', duration.toString(),
+        '-i', inputSource,
+        '-filter_complex', filterComplex,
+        '-f', 'null',
+        '-'
+      ];
+
+      console.log(`[EBU R128] Analyzing audio: ffmpeg ${ffmpegArgs.join(' ')}`);
+
+      return new Promise((resolve, reject) => {
+        const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+        let stderrOutput = '';
+
+        ffmpeg.stderr.on('data', (data) => {
+          stderrOutput += data.toString();
+        });
+
+        ffmpeg.on('close', (code) => {
+          if (code !== 0) {
+            console.error(`[EBU R128] FFmpeg stderr output:`, stderrOutput);
+            reject(new Error(`FFmpeg process exited with code ${code}. stderr: ${stderrOutput}`));
+            return;
+          }
+
+          // Parse EBU R128 measurements from stderr
+          const measurements = this._parseEbuR128Output(stderrOutput);
+          resolve(measurements);
+        });
+
+        ffmpeg.on('error', (error) => {
+          reject(error);
+        });
+      });
+
+    } catch (error) {
+      console.error('Error analyzing EBU R128:', error);
+      throw error;
+    }
+  }
+
+  _parseEbuR128Output(output) {
+    const measurements = {
+      integrated: null,
+      range: null,
+      lraLow: null,
+      lraHigh: null,
+      threshold: null
+    };
+
+    console.log(`[EBU R128] Raw FFmpeg output:`, output);
+
+    try {
+      // Parse integrated loudness (format: "I:         -20.1 LUFS")
+      const integratedMatch = output.match(/I:\s*(-?\d+\.?\d*)\s*LUFS/);
+      if (integratedMatch) {
+        measurements.integrated = parseFloat(integratedMatch[1]);
+      }
+
+      // Parse loudness range (format: "LRA:         2.3 LU")
+      const rangeMatch = output.match(/LRA:\s*(\d+\.?\d*)\s*LU/);
+      if (rangeMatch) {
+        measurements.range = parseFloat(rangeMatch[1]);
+      }
+
+      // Parse LRA low (for additional info)
+      const lraLowMatch = output.match(/LRA low:\s*(-?\d+\.?\d*)\s*LUFS/);
+      if (lraLowMatch) {
+        measurements.lraLow = parseFloat(lraLowMatch[1]);
+      }
+
+      // Parse LRA high (for additional info)
+      const lraHighMatch = output.match(/LRA high:\s*(-?\d+\.?\d*)\s*LUFS/);
+      if (lraHighMatch) {
+        measurements.lraHigh = parseFloat(lraHighMatch[1]);
+      }
+
+      // Parse integrated loudness threshold
+      const thresholdMatch = output.match(/Threshold:\s*(-?\d+\.?\d*)\s*LUFS/);
+      if (thresholdMatch) {
+        measurements.threshold = parseFloat(thresholdMatch[1]);
+      }
+
+      // Note: This format doesn't include true peak, momentary, or short-term
+      // Those would require different ebur128 options or parsing frame-by-frame data
+
+      console.log(`[EBU R128] Parsed measurements:`, measurements);
+      return measurements;
+
+    } catch (error) {
+      console.error('Error parsing EBU R128 output:', error);
+      return measurements;
+    }
   }
 
 }

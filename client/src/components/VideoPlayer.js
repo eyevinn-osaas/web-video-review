@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import Hls from 'hls.js';
 import api from '../services/api';
 import VideoProgressBar from './VideoProgressBar';
+import EbuR128Monitor from './EbuR128Monitor';
 
 function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, onActiveAudioStreamChange, onSwitchAudioTrackRef }) {
   const videoRef = useRef(null);
@@ -202,8 +203,8 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, 
         
         hlsRef.current = hls;
         
-        // Get playlist URL and load (always with goniometer)
-        const playlistUrl = api.getHLSPlaylistUrl(videoKey, 10, { goniometer: true });
+        // Get playlist URL and load (always with goniometer, test EBU R128)
+        const playlistUrl = api.getHLSPlaylistUrl(videoKey, 10, { goniometer: true, ebuR128: true });
         console.log(`[VideoPlayer] Loading HLS playlist: ${playlistUrl} (with goniometer)`);
         hls.loadSource(playlistUrl);
         hls.attachMedia(video);
@@ -366,8 +367,8 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, 
         });
         
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // Native HLS support (always with goniometer)
-        const playlistUrl = api.getHLSPlaylistUrl(videoKey, 10, { goniometer: true });
+        // Native HLS support (always with goniometer, test EBU R128)
+        const playlistUrl = api.getHLSPlaylistUrl(videoKey, 10, { goniometer: true, ebuR128: true });
         console.log(`[VideoPlayer] Loading native HLS: ${playlistUrl} (with goniometer)`);
         video.src = playlistUrl;
         
@@ -649,6 +650,12 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, 
             onReady={handleProgressReady}
           />
         )}
+        
+        <EbuR128Monitor
+          videoKey={videoKey}
+          currentTime={currentTime}
+          isPlaying={isPlaying}
+        />
       </div>
       
       <div className="video-controls" style={{ 

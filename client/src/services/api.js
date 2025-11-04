@@ -73,6 +73,11 @@ class ApiService {
       params.append('goniometer', 'true');
     }
     
+    // EBU R128 support
+    if (options.ebuR128) {
+      params.append('ebuR128', 'true');
+    }
+    
     return `${API_BASE}/video/${encodeURIComponent(videoKey)}/playlist.m3u8?${params}`;
   }
 
@@ -125,6 +130,19 @@ class ApiService {
     } catch (error) {
       console.error('Error getting signed URL:', error);
       throw new Error(error.response?.data?.error || 'Failed to get signed URL');
+    }
+  }
+
+  async getEbuR128Analysis(videoKey, startTime = 0, duration = 10) {
+    try {
+      const response = await this.client.get(`/video/${encodeURIComponent(videoKey)}/ebu-r128`, {
+        params: { startTime, duration },
+        timeout: 30000 // 30 second timeout for analysis
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching EBU R128 analysis:', error);
+      throw new Error(error.response?.data?.error || 'Failed to fetch EBU R128 analysis');
     }
   }
 }
