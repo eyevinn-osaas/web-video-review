@@ -728,9 +728,9 @@ class VideoService {
     let goniometerFilter = '';
     
     if (showGoniometer && hasAudio) {
-      // Create goniometer overlay using avectorscope
-      goniometerFilter = `[0:a]avectorscope=size=200x200:zoom=1.5:draw=line:rf=30:gf=30:bf=30[gonio]`;
-      videoFilterChain = `[${videoInputForFilter}]split=2[v1][v2];[v1]setpts=PTS-STARTPTS,scale=1280:720[v1scaled];[gonio]scale=200:200[goniosized];[v1scaled][goniosized]overlay=20:20,drawtext=text='%{pts\\:hms}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10[hls]`;
+      // Create goniometer overlay using avectorscope (300x300, bottom left)
+      goniometerFilter = `[0:a]avectorscope=size=300x300:zoom=1.5:draw=line:rf=30:gf=30:bf=30[gonio]`;
+      videoFilterChain = `[${videoInputForFilter}]split=2[v1][v2];[v1]setpts=PTS-STARTPTS,scale=1280:720[v1scaled];[gonio]scale=300:300[goniosized];[v1scaled][goniosized]overlay=20:H-h-20,drawtext=text='%{pts\\:hms}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10[hls]`;
     } else {
       // No goniometer for videos without audio or when disabled
       goniometerFilter = '';
