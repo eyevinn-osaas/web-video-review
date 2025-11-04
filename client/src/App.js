@@ -14,6 +14,7 @@ function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [seeking, setSeeking] = useState(false);
   const [currentPath, setCurrentPath] = useState('');
+  const [activeAudioTrack, setActiveAudioTrack] = useState(null);
   const [filters, setFilters] = useState({
     search: '',
     fileType: '',
@@ -60,6 +61,7 @@ function App() {
       setSelectedVideo(video);
       setVideoInfo(null);
       setCurrentTime(0);
+      setActiveAudioTrack(null);
       
       const info = await api.getVideoInfo(video.key);
       setVideoInfo(info);
@@ -78,6 +80,10 @@ function App() {
     setSeeking(true);
     setCurrentTime(time);
     setTimeout(() => setSeeking(false), 100);
+  };
+
+  const handleActiveAudioStreamChange = (audioTrackInfo) => {
+    setActiveAudioTrack(audioTrackInfo);
   };
 
   if (loading) {
@@ -131,6 +137,7 @@ function App() {
                 currentTime={currentTime}
                 onTimeUpdate={handleTimeUpdate}
                 seeking={seeking}
+                onActiveAudioStreamChange={handleActiveAudioStreamChange}
               />
             ) : (
               <div className="loading">
@@ -146,6 +153,7 @@ function App() {
                 currentTime={currentTime}
                 onSeek={handleSeek}
                 videoKey={selectedVideo.key}
+                activeAudioTrack={activeAudioTrack}
               />
             </div>
           )}

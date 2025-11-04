@@ -419,7 +419,8 @@ class VideoService {
           }
           
           const videoStream = metadata.streams.find(stream => stream.codec_type === 'video');
-          const audioStream = metadata.streams.find(stream => stream.codec_type === 'audio');
+          const audioStreams = metadata.streams.filter(stream => stream.codec_type === 'audio');
+          const primaryAudioStream = audioStreams[0]; // Use first audio stream as primary
           
           const info = {
             duration: parseFloat(metadata.format.duration),
@@ -433,12 +434,28 @@ class VideoService {
               fps: eval(videoStream.r_frame_rate),
               bitrate: parseInt(videoStream.bit_rate) || 0
             } : null,
-            audio: audioStream ? {
-              codec: audioStream.codec_name,
-              sampleRate: parseInt(audioStream.sample_rate),
-              channels: audioStream.channels,
-              bitrate: parseInt(audioStream.bit_rate) || 0
-            } : null
+            audio: primaryAudioStream ? {
+              codec: primaryAudioStream.codec_name,
+              sampleRate: parseInt(primaryAudioStream.sample_rate),
+              channels: primaryAudioStream.channels,
+              channelLayout: primaryAudioStream.channel_layout || this._getChannelLayoutFromChannels(primaryAudioStream.channels),
+              bitrate: parseInt(primaryAudioStream.bit_rate) || 0,
+              bitsPerSample: primaryAudioStream.bits_per_sample || null,
+              language: primaryAudioStream.tags?.language || null,
+              title: primaryAudioStream.tags?.title || null
+            } : null,
+            audioStreams: audioStreams.length > 1 ? audioStreams.map((stream, index) => ({
+              index: index,
+              codec: stream.codec_name,
+              sampleRate: parseInt(stream.sample_rate),
+              channels: stream.channels,
+              channelLayout: stream.channel_layout || this._getChannelLayoutFromChannels(stream.channels),
+              bitrate: parseInt(stream.bit_rate) || 0,
+              bitsPerSample: stream.bits_per_sample || null,
+              language: stream.tags?.language || null,
+              title: stream.tags?.title || null,
+              duration: parseFloat(stream.duration) || parseFloat(metadata.format.duration)
+            })) : null
           };
           
           // Cache the video info for future use
@@ -1042,6 +1059,20 @@ class VideoService {
     return abortedCount;
   }
 
+
+  _getChannelLayoutFromChannels(channels) {
+    const channelLayouts = {
+      1: 'mono',
+      2: 'stereo', 
+      3: '2.1',
+      4: 'quad',
+      5: '4.1',
+      6: '5.1',
+      7: '6.1',
+      8: '7.1'
+    };
+    return channelLayouts[channels] || `${channels} channels`;
+  }
 
   async loadNewVideo(s3Key) {
     // Check if this is a different video than currently loaded

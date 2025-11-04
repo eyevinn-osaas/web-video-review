@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import api from '../services/api';
 import WaveformDisplay from './WaveformDisplay';
+import AudioLayoutDisplay from './AudioLayoutDisplay';
 
-function VideoTimeline({ videoInfo, currentTime, onSeek, videoKey }) {
+function VideoTimeline({ videoInfo, currentTime, onSeek, videoKey, activeAudioTrack }) {
   const [thumbnails, setThumbnails] = useState([]);
   const [waveform, setWaveform] = useState(null);
   const [waveformLoading, setWaveformLoading] = useState(false);
@@ -340,6 +341,9 @@ function VideoTimeline({ videoInfo, currentTime, onSeek, videoKey }) {
         <span>Click timeline/waveform to seek • {thumbnails.some(t => t.data) ? 'Thumbnails loaded' : 'Loading thumbnails...'} • {waveform?.hasAudio ? 'Waveform loaded' : waveformLoading ? 'Loading waveform...' : 'No audio'}</span>
         <span>{formatTime(videoInfo.duration)}</span>
       </div>
+      
+      {/* Audio Layout Information */}
+      <AudioLayoutDisplay videoInfo={videoInfo} activeAudioTrack={activeAudioTrack} />
     </div>
   );
 }

@@ -3,7 +3,7 @@ import Hls from 'hls.js';
 import api from '../services/api';
 import VideoProgressBar from './VideoProgressBar';
 
-function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking }) {
+function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, onActiveAudioStreamChange }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -16,6 +16,7 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking }
   const [isBuffering, setIsBuffering] = useState(true);
   const [showProgress, setShowProgress] = useState(true);
   const [progressReady, setProgressReady] = useState(false);
+  const [activeAudioTrack, setActiveAudioTrack] = useState(null);
 
   useEffect(() => {
     if (!videoKey || !videoRef.current) return;
@@ -28,6 +29,66 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking }
     setIsPlaying(false);
     setError(null);
     
+    const detectAudioTracks = () => {
+      const video = videoRef.current;
+      if (!video) return;
+
+      let activeTrackInfo = null;
+
+      // Try HLS audio tracks first
+      if (hlsRef.current && hlsRef.current.audioTracks) {
+        const audioTracks = hlsRef.current.audioTracks;
+        const activeTrackId = hlsRef.current.audioTrack;
+        
+        if (audioTracks.length > 0) {
+          const activeTrack = audioTracks[activeTrackId];
+          if (activeTrack) {
+            activeTrackInfo = {
+              index: activeTrackId,
+              name: activeTrack.name || `Track ${activeTrackId + 1}`,
+              language: activeTrack.lang || activeTrack.language,
+              codec: activeTrack.codec,
+              channels: activeTrack.channels,
+              source: 'hls'
+            };
+          }
+        }
+      }
+
+      // Fallback to native HTML5 audio tracks
+      if (!activeTrackInfo && video.audioTracks && video.audioTracks.length > 0) {
+        for (let i = 0; i < video.audioTracks.length; i++) {
+          const track = video.audioTracks[i];
+          if (track.enabled) {
+            activeTrackInfo = {
+              index: i,
+              name: track.label || `Track ${i + 1}`,
+              language: track.language,
+              source: 'native'
+            };
+            break;
+          }
+        }
+      }
+
+      // If no specific track is detected but we have audio, assume first stream
+      if (!activeTrackInfo && videoInfo && videoInfo.audioStreams && videoInfo.audioStreams.length > 0) {
+        activeTrackInfo = {
+          index: 0,
+          name: 'Default Audio',
+          source: 'assumed'
+        };
+      }
+
+      console.log('Detected active audio track:', activeTrackInfo);
+      setActiveAudioTrack(activeTrackInfo);
+      
+      // Notify parent component
+      if (onActiveAudioStreamChange) {
+        onActiveAudioStreamChange(activeTrackInfo);
+      }
+    };
+
     const initializePlayer = () => {
       if (hlsRef.current) {
         hlsRef.current.destroy();
@@ -87,6 +148,18 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking }
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           // Manually start loading from beginning
           hls.startLoad(0);
+          
+          // Initialize audio track detection
+          detectAudioTracks();
+        });
+        
+        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+          detectAudioTracks();
+        });
+        
+        hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (event, data) => {
+          console.log('Audio track switched to:', data);
+          detectAudioTracks();
         });
         
         let userCurrentTime = 0;
@@ -234,9 +307,15 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking }
         const playlistUrl = api.getHLSPlaylistUrl(videoKey);
         console.log(`[VideoPlayer] Loading native HLS: ${playlistUrl}`);
         video.src = playlistUrl;
+        
+        // Detect audio tracks after video loads
+        video.addEventListener('loadedmetadata', detectAudioTracks);
       } else {
         const streamUrl = api.getVideoStreamUrl(videoKey);
         video.src = streamUrl;
+        
+        // Detect audio tracks after video loads
+        video.addEventListener('loadedmetadata', detectAudioTracks);
       }
     };
 
