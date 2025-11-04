@@ -557,15 +557,37 @@ class VideoService {
     const segmentPattern = path.join(tempDir, 'segment%03d.ts');
     const thumbnailPattern = path.join(tempDir, 'thumb%03d.jpg');
     
-    // Get input source - request enough data for initial segments (30 seconds worth)
+    // Get input source - for HLS generation we need the complete file
     let inputSource;
     if (this.enableLocalCache) {
       try {
-        const requiredDuration = Math.max(30, segmentDuration * 3); // At least 30s or 3 segments worth
-        const localFilePath = await this.ensureLocalFile(s3Key, requiredDuration);
+        // For full HLS generation, we need the complete file, not just initial segments
+        const localFilePath = await this.ensureLocalFile(s3Key, null); // null = request complete file
         if (localFilePath && fsSync.existsSync(localFilePath)) {
-          inputSource = localFilePath;
-          console.log(`[Native Live HLS] Using local cached file (${requiredDuration}s data): ${localFilePath}`);
+          // Check if we have a complete download
+          const stats = fsSync.statSync(localFilePath);
+          const cacheEntry = this.localFileCache.get(s3Key);
+          
+          if (cacheEntry && cacheEntry.isPartial === false) {
+            inputSource = localFilePath;
+            console.log(`[Native Live HLS] Using complete cached file: ${localFilePath} (${(stats.size/1024/1024).toFixed(1)}MB)`);
+          } else if (cacheEntry && cacheEntry.isPartial === true) {
+            console.log(`[Native Live HLS] Cached file is partial (${(stats.size/1024/1024).toFixed(1)}MB), waiting for complete download...`);
+            // Wait a bit for download to complete, then check again
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            const updatedStats = fsSync.statSync(localFilePath);
+            const updatedCacheEntry = this.localFileCache.get(s3Key);
+            
+            if (updatedCacheEntry && updatedCacheEntry.isPartial === false) {
+              inputSource = localFilePath;
+              console.log(`[Native Live HLS] Now using complete cached file: ${localFilePath} (${(updatedStats.size/1024/1024).toFixed(1)}MB)`);
+            } else {
+              console.log(`[Native Live HLS] Download still incomplete, falling back to signed URL`);
+            }
+          } else {
+            inputSource = localFilePath;
+            console.log(`[Native Live HLS] Using cached file (status unknown): ${localFilePath}`);
+          }
         }
       } catch (error) {
         console.log(`[Native Live HLS] Local cache failed, using signed URL:`, error.message);
@@ -575,6 +597,29 @@ class VideoService {
     if (!inputSource) {
       inputSource = s3Service.getSignedUrl(s3Key, 3600);
       console.log(`[Native Live HLS] Using signed URL approach`);
+    }
+    
+    // Final validation: if using local file, warn about potential incomplete downloads
+    if (inputSource.includes('/tmp/videoreview/')) {
+      const stats = fsSync.statSync(inputSource);
+      const cacheEntry = this.localFileCache.get(s3Key);
+      const expectedSize = videoInfo.size;
+      const isComplete = cacheEntry?.isPartial === false;
+      const sizeMatch = expectedSize ? Math.abs(stats.size - expectedSize) < 1024 : 'Unknown';
+      
+      console.log(`[Native Live HLS] Local file validation:`);
+      console.log(`  - Current size: ${(stats.size/1024/1024).toFixed(1)}MB`);
+      console.log(`  - Expected size: ${expectedSize ? (expectedSize/1024/1024).toFixed(1) + 'MB' : 'Unknown'}`);
+      console.log(`  - Size match: ${sizeMatch === true ? 'Yes' : sizeMatch === false ? 'No' : sizeMatch}`);
+      console.log(`  - Download complete: ${isComplete ? 'Yes' : 'Unknown/No'}`);
+      
+      if (cacheEntry?.isPartial === true) {
+        console.warn(`[Native Live HLS] WARNING: Using partial file for HLS generation - may result in truncated output`);
+      }
+      
+      if (expectedSize && stats.size < expectedSize * 0.95) {
+        console.warn(`[Native Live HLS] WARNING: File appears incomplete (${((stats.size/expectedSize)*100).toFixed(1)}% of expected size)`);
+      }
     }
     
     // Build FFmpeg command for native live HLS generation
@@ -739,6 +784,16 @@ class VideoService {
         
         if (code !== 0) {
           console.error(`[Native Live HLS] FFmpeg failed with code ${code}:`, stderr);
+          
+          // Check if this might be due to incomplete file download
+          if (stderr.includes('End of file') || stderr.includes('Invalid data found') || stderr.includes('truncated')) {
+            console.error(`[Native Live HLS] Error suggests incomplete file download. Expected duration: ${videoInfo.duration}s`);
+            if (inputSource.includes('/tmp/videoreview/')) {
+              const stats = fsSync.statSync(inputSource);
+              console.error(`[Native Live HLS] Local file size: ${(stats.size/1024/1024).toFixed(1)}MB`);
+            }
+          }
+          
           reject(new Error(`Native Live HLS generation failed: ${stderr}`));
           return;
         }
