@@ -732,11 +732,15 @@ class VideoService {
     let goniometerFilter = '';
     let stereoFilter = '';
     
+    // Create stereo filter if needed for mono combinations
+    if (hasMonoCombination) {
+      const combo = videoInfo.monoStreamCombinations;
+      stereoFilter = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo0]`;
+    }
+    
     if (showGoniometer && hasAudio) {
       if (hasMonoCombination) {
-        // Create stereo combination for goniometer
-        const combo = videoInfo.monoStreamCombinations;
-        stereoFilter = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo0]`;
+        // Use combined stereo for goniometer
         goniometerFilter = `[stereo0]avectorscope=size=300x300:zoom=1.5:draw=line:rf=30:gf=30:bf=30[gonio]`;
       } else {
         // Use first audio stream for goniometer
@@ -756,18 +760,20 @@ class VideoService {
       `[v2]fps=1/${segmentDuration},scale=320:180[thumbs]`
     ].filter(Boolean).join(';');
     
+    console.log(`[Native Live HLS] Filter components:`, {
+      stereoFilter,
+      goniometerFilter,
+      videoFilterChain,
+      hasMonoCombination
+    });
+    console.log(`[Native Live HLS] Filter complex: ${filterComplex}`);
+    
     // Handle audio stream mappings with mono stream combination logic
     let finalFilterComplex = filterComplex;
     
     if (hasAudio && videoInfo.audioStreams && videoInfo.audioStreams.length > 0) {
-      if (videoInfo.monoStreamCombinations && videoInfo.monoStreamCombinations.canCombineFirstTwo) {
+      if (hasMonoCombination) {
         const combo = videoInfo.monoStreamCombinations;
-        
-        if (!hasMonoCombination) {
-          // No goniometer, but still need stereo combination for audio output
-          const amergeFilter = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo0]`;
-          finalFilterComplex = finalFilterComplex + ';' + amergeFilter;
-        }
         
         // Map the combined stereo stream
         ffmpegArgs.push('-map', '[stereo0]');
