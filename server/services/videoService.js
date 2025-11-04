@@ -482,7 +482,7 @@ class VideoService {
       '-b:v', '1500k',
       '-maxrate', '1500k',
       '-bufsize', '3M',
-      '-vf', `drawtext=text='%{pts\\:hms\\:${sourceFps}}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10`,
+      '-vf', `setpts=PTS-STARTPTS,drawtext=text='%{pts\\:hms\\:${sourceFps}}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10`,
       '-r', '25',
       '-s', '1280x720',
       '-c:a', 'aac',
@@ -704,7 +704,7 @@ class VideoService {
     ffmpegArgs.push(
       '-maxrate', '2000k',
       '-bufsize', '4000k',
-      '-vf', `drawtext=text='%{pts\\:hms\\:${sourceFps}}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10`,
+      '-vf', `setpts=PTS-STARTPTS,drawtext=text='%{pts\\:hms\\:${sourceFps}}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10`,
       '-s', '1280x720',
       '-r', '25',
       '-pix_fmt', 'yuv420p',
