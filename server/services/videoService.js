@@ -540,6 +540,9 @@ class VideoService {
     const videoInfo = await this.getVideoInfo(s3Key);
     const hasAudio = videoInfo.audio !== null;
     
+    // Determine if this is an MXF source file
+    const isMxfSource = s3Key.toLowerCase().endsWith('.mxf');
+    
     console.log(`[Native Live HLS] Video duration: ${videoInfo.duration}s, audio: ${hasAudio}`);
     
     if (isMxfSource) {
