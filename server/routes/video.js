@@ -99,7 +99,8 @@ router.get('/:key/stream', async (req, res) => {
 router.get('/:key/playlist.m3u8', async (req, res) => {
   try {
     const key = decodeURIComponent(req.params.key);
-    const { segmentDuration = 10 } = req.query;
+    const { segmentDuration = 10, goniometer = false } = req.query;
+    const showGoniometer = goniometer === 'true' || goniometer === '1';
     
     // Check if we have existing HLS cache
     let playlist;
@@ -122,7 +123,7 @@ router.get('/:key/playlist.m3u8', async (req, res) => {
     
     if (!playlist) {
       // Generate initial HLS data and wait for initial segments
-      const hlsData = await videoService.generateHLSSegments(key, parseInt(segmentDuration));
+      const hlsData = await videoService.generateHLSSegments(key, parseInt(segmentDuration), { showGoniometer });
       playlist = hlsData.playlist;
       
       // Wait for initial segments to be created before returning playlist

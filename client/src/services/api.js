@@ -64,8 +64,13 @@ class ApiService {
     return `${API_BASE}/video/${encodeURIComponent(videoKey)}/seek?${params}`;
   }
 
-  getHLSPlaylistUrl(videoKey, segmentDuration = 10) {
+  getHLSPlaylistUrl(videoKey, segmentDuration = 10, options = {}) {
     const params = new URLSearchParams({ segmentDuration });
+    
+    if (options.goniometer) {
+      params.append('goniometer', 'true');
+    }
+    
     return `${API_BASE}/video/${encodeURIComponent(videoKey)}/playlist.m3u8?${params}`;
   }
 

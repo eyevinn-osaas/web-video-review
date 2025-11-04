@@ -527,10 +527,10 @@ class VideoService {
     return ffmpegProcess.stdout;
   }
 
-  async generateHLSSegments(s3Key, segmentDuration = 10) {
+  async generateHLSSegments(s3Key, segmentDuration = 10, options = {}) {
     try {
       // Use FFmpeg native live HLS generation
-      const hlsData = await this.generateNativeLiveHLS(s3Key, segmentDuration);
+      const hlsData = await this.generateNativeLiveHLS(s3Key, segmentDuration, options);
       return hlsData;
     } catch (error) {
       console.error('Error generating native live HLS playlist:', error);
@@ -540,8 +540,9 @@ class VideoService {
 
 
 
-  async generateNativeLiveHLS(s3Key, segmentDuration = 10) {
-    const cacheKey = `nativehls:${s3Key}:${segmentDuration}`;
+  async generateNativeLiveHLS(s3Key, segmentDuration = 10, options = {}) {
+    const { showGoniometer = false } = options;
+    const cacheKey = `nativehls:${s3Key}:${segmentDuration}:${showGoniometer ? 'gonio' : 'normal'}`;
     
     // Check if native HLS is already being generated
     if (this.activeProcesses.has(cacheKey)) {
@@ -551,9 +552,9 @@ class VideoService {
     // Track HLS generation in progress
     this.hlsGenerationInProgress.add(s3Key);
     
-    console.log(`Starting FFmpeg native live HLS generation for ${s3Key} with ${segmentDuration}s segments`);
+    console.log(`Starting FFmpeg native live HLS generation for ${s3Key} with ${segmentDuration}s segments${showGoniometer ? ' (with goniometer overlay)' : ''}`);
     
-    const processPromise = this._generateNativeLiveHLSInternal(s3Key, segmentDuration);
+    const processPromise = this._generateNativeLiveHLSInternal(s3Key, segmentDuration, options);
     this.activeProcesses.set(cacheKey, processPromise);
     
     try {
@@ -565,7 +566,8 @@ class VideoService {
     }
   }
 
-  async _generateNativeLiveHLSInternal(s3Key, segmentDuration = 10) {
+  async _generateNativeLiveHLSInternal(s3Key, segmentDuration = 10, options = {}) {
+    const { showGoniometer = false } = options;
     // Get video info for duration calculation
     const videoInfo = await this.getVideoInfo(s3Key);
     const hasAudio = videoInfo.audio !== null;
@@ -722,11 +724,22 @@ class VideoService {
     
     // Complex filter graph: split input, apply different filters to each branch
     // Use setpts to reset timestamps and basic SMPTE format
+    let videoFilterChain = '';
+    let goniometerFilter = '';
+    
+    if (showGoniometer && hasAudio) {
+      // Create goniometer overlay using avectorscope
+      goniometerFilter = `[0:a]avectorscope=size=200x200:zoom=1.5:draw=line:rf=30:gf=30:bf=30[gonio];`;
+      videoFilterChain = `[${videoInputForFilter}]split=2[v1][v2];[v1]setpts=PTS-STARTPTS,scale=1280:720[v1scaled];[gonio]scale=200:200[goniosized];[v1scaled][goniosized]overlay=20:20,drawtext=text='%{pts\\:hms}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10[hls]`;
+    } else {
+      videoFilterChain = `[${videoInputForFilter}]split=2[v1][v2];[v1]setpts=PTS-STARTPTS,scale=1280:720,drawtext=text='%{pts\\:hms}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10[hls]`;
+    }
+    
     const filterComplex = [
-      `[${videoInputForFilter}]split=2[v1][v2]`,
-      `[v1]setpts=PTS-STARTPTS,scale=1280:720,drawtext=text='%{pts\\:hms}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10[hls]`,
+      goniometerFilter,
+      videoFilterChain,
       `[v2]fps=1/${segmentDuration},scale=320:180[thumbs]`
-    ].join(';');
+    ].filter(Boolean).join(';');
     
     // Handle audio stream mappings with mono stream combination logic
     let finalFilterComplex = filterComplex;
