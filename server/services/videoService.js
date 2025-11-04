@@ -444,7 +444,7 @@ class VideoService {
               language: primaryAudioStream.tags?.language || null,
               title: primaryAudioStream.tags?.title || null
             } : null,
-            audioStreams: audioStreams.length > 1 ? audioStreams.map((stream, index) => ({
+            audioStreams: audioStreams.length > 0 ? audioStreams.map((stream, index) => ({
               index: index,
               codec: stream.codec_name,
               sampleRate: parseInt(stream.sample_rate),
@@ -455,7 +455,7 @@ class VideoService {
               language: stream.tags?.language || null,
               title: stream.tags?.title || null,
               duration: parseFloat(stream.duration) || parseFloat(metadata.format.duration)
-            })) : null
+            })) : []
           };
           
           // Cache the video info for future use
@@ -692,14 +692,7 @@ class VideoService {
       );
     }
     
-    // Video encoding - force software for video filters compatibility
-    ffmpegArgs.push('-c:v', 'libx264');
-    
-    // Software encoding quality settings for video filter compatibility
-    ffmpegArgs.push(
-      '-preset', 'fast',
-      '-crf', '23'
-    );
+    // Video codec will be set later based on hardware acceleration capabilities
     
     // Audio encoding
     ffmpegArgs.push('-c:a', 'aac', '-b:a', '128k');
@@ -732,17 +725,71 @@ class VideoService {
       `[v2]fps=1/${segmentDuration},scale=320:180[thumbs]`
     ].join(';');
     
+    // Add video mapping
     ffmpegArgs.push(
       '-filter_complex', filterComplex,
-      '-map', '[hls]',
-      '-map', hasAudio ? '0:a:0' : '0:a:0',
-      '-maxrate', '2000k',
-      '-bufsize', '4000k',
-      '-r', '25',
-      '-pix_fmt', 'yuv420p',
-      '-profile:v', 'high',
-      '-level', '4.0',
-      '-vsync', 'cfr',
+      '-map', '[hls]'
+    );
+    
+    // Add all audio stream mappings if audio exists
+    if (hasAudio && videoInfo.audioStreams && videoInfo.audioStreams.length > 0) {
+      videoInfo.audioStreams.forEach((stream, index) => {
+        ffmpegArgs.push('-map', `0:a:${index}`);
+        
+        // Add metadata for each audio stream
+        const language = stream.language || 'und';
+        const title = stream.title || `Track ${index + 1}`;
+        ffmpegArgs.push('-metadata:s:a:' + index, `language=${language}`);
+        ffmpegArgs.push('-metadata:s:a:' + index, `title=${title}`);
+      });
+    }
+    
+    // Add hardware acceleration and video encoding settings
+    const hwAccel = this.hwAccel;
+    if (hwAccel.type === 'videotoolbox') {
+      // Use VideoToolbox hardware acceleration on macOS
+      ffmpegArgs.push(
+        '-c:v', hwAccel.encoder,
+        '-q:v', '65',
+        '-realtime', '1',
+        '-maxrate', '2000k',
+        '-bufsize', '4000k',
+        '-r', '25',
+        '-pix_fmt', 'yuv420p',
+        '-vsync', 'cfr',
+      );
+    } else if (hwAccel.type === 'nvenc') {
+      // Use NVENC hardware acceleration on NVIDIA systems
+      ffmpegArgs.push(
+        '-c:v', hwAccel.encoder,
+        '-preset', hwAccel.preset,
+        '-crf', '23',
+        '-maxrate', '2000k',
+        '-bufsize', '4000k',
+        '-r', '25',
+        '-pix_fmt', 'yuv420p',
+        '-profile:v', 'high',
+        '-level', '4.0',
+        '-vsync', 'cfr',
+      );
+    } else {
+      // Fallback to software encoding
+      ffmpegArgs.push(
+        '-c:v', 'libx264',
+        '-preset', 'fast',
+        '-crf', '23',
+        '-maxrate', '2000k',
+        '-bufsize', '4000k',
+        '-r', '25',
+        '-pix_fmt', 'yuv420p',
+        '-profile:v', 'high',
+        '-level', '4.0',
+        '-vsync', 'cfr',
+      );
+    }
+    
+    // Add HLS format and settings
+    ffmpegArgs.push(
       '-f', 'hls',
       '-hls_time', segmentDuration.toString(),
       '-hls_playlist_type', 'event',
@@ -764,6 +811,12 @@ class VideoService {
     console.log(`[Native Live HLS] Expected ${maxThumbnails} thumbnails (Math.ceil(${videoInfo.duration}/${segmentDuration}))`);
     console.log(`[Native Live HLS] Thumbnails will be extracted at: ${Array.from({length: maxThumbnails}, (_, i) => `${(thumbnailOffset + i * segmentDuration).toFixed(1)}s`).join(', ')}`);
     console.log(`[Native Live HLS] Video input for filter: ${videoInputForFilter} (hasAudio: ${hasAudio})`);
+    console.log(`[Native Live HLS] Audio streams included: ${hasAudio && videoInfo.audioStreams ? videoInfo.audioStreams.length : 0} streams`);
+    if (hasAudio && videoInfo.audioStreams && videoInfo.audioStreams.length > 0) {
+      videoInfo.audioStreams.forEach((stream, index) => {
+        console.log(`[Native Live HLS] Audio stream ${index}: ${stream.codec} ${stream.channelLayout || stream.channels + ' channels'} @ ${stream.sampleRate}Hz`);
+      });
+    }
     console.log(`[Native Live HLS] Filter complex: ${filterComplex}`);
     console.log(`[Native Live HLS] FFmpeg command: ffmpeg ${ffmpegArgs.join(' ')}`);
     
@@ -888,7 +941,7 @@ class VideoService {
         }
         
         try {
-          // Read the final playlist
+          // Read the playlist
           const playlist = await fs.readFile(playlistPath, 'utf8');
           
           // Count segments

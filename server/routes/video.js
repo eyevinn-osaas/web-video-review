@@ -107,6 +107,7 @@ router.get('/:key/playlist.m3u8', async (req, res) => {
     
     if (videoService.nativeHlsCache && videoService.nativeHlsCache.has(key)) {
       cacheEntry = videoService.nativeHlsCache.get(key);
+      
       const playlistPath = path.join(cacheEntry.tempDir, 'playlist.m3u8');
       
       if (require('fs').existsSync(playlistPath)) {

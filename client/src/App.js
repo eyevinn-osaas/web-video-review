@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import VideoList from './components/VideoList';
 import VideoPlayer from './components/VideoPlayer';
 import VideoTimeline from './components/VideoTimeline';
@@ -15,6 +15,7 @@ function App() {
   const [seeking, setSeeking] = useState(false);
   const [currentPath, setCurrentPath] = useState('');
   const [activeAudioTrack, setActiveAudioTrack] = useState(null);
+  const [switchAudioTrackRef, setSwitchAudioTrackRef] = useState(null);
   const [filters, setFilters] = useState({
     search: '',
     fileType: '',
@@ -82,9 +83,13 @@ function App() {
     setTimeout(() => setSeeking(false), 100);
   };
 
-  const handleActiveAudioStreamChange = (audioTrackInfo) => {
+  const handleActiveAudioStreamChange = useCallback((audioTrackInfo) => {
     setActiveAudioTrack(audioTrackInfo);
-  };
+  }, []);
+
+  const handleSwitchAudioTrackRef = useCallback((switchFunction) => {
+    setSwitchAudioTrackRef(() => switchFunction);
+  }, []);
 
   if (loading) {
     return (
@@ -138,6 +143,7 @@ function App() {
                 onTimeUpdate={handleTimeUpdate}
                 seeking={seeking}
                 onActiveAudioStreamChange={handleActiveAudioStreamChange}
+                onSwitchAudioTrackRef={handleSwitchAudioTrackRef}
               />
             ) : (
               <div className="loading">
@@ -154,6 +160,7 @@ function App() {
                 onSeek={handleSeek}
                 videoKey={selectedVideo.key}
                 activeAudioTrack={activeAudioTrack}
+                onAudioTrackSelect={switchAudioTrackRef}
               />
             </div>
           )}

@@ -1,9 +1,9 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import Hls from 'hls.js';
 import api from '../services/api';
 import VideoProgressBar from './VideoProgressBar';
 
-function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, onActiveAudioStreamChange }) {
+function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, onActiveAudioStreamChange, onSwitchAudioTrackRef }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -17,6 +17,35 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, 
   const [showProgress, setShowProgress] = useState(true);
   const [progressReady, setProgressReady] = useState(false);
   const [activeAudioTrack, setActiveAudioTrack] = useState(null);
+  const [availableAudioTracks, setAvailableAudioTracks] = useState([]);
+
+  const switchAudioTrack = useCallback((trackIndex) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    console.log(`Switching to audio track ${trackIndex}`);
+
+    // Try HLS audio track switching first
+    if (hlsRef.current && hlsRef.current.audioTracks && hlsRef.current.audioTracks.length > trackIndex) {
+      console.log('Switching HLS audio track');
+      hlsRef.current.audioTrack = trackIndex;
+      return;
+    }
+
+    // Try native HTML5 audio track switching
+    if (video.audioTracks && video.audioTracks.length > trackIndex) {
+      console.log('Switching native audio track');
+      // Disable all tracks first
+      for (let i = 0; i < video.audioTracks.length; i++) {
+        video.audioTracks[i].enabled = false;
+      }
+      // Enable the selected track
+      video.audioTracks[trackIndex].enabled = true;
+      return;
+    }
+
+    console.warn('Audio track switching not supported for this video format');
+  }, []);
 
   useEffect(() => {
     if (!videoKey || !videoRef.current) return;
@@ -34,11 +63,22 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, 
       if (!video) return;
 
       let activeTrackInfo = null;
+      let availableTracks = [];
 
       // Try HLS audio tracks first
       if (hlsRef.current && hlsRef.current.audioTracks) {
         const audioTracks = hlsRef.current.audioTracks;
         const activeTrackId = hlsRef.current.audioTrack;
+        
+        // Build available tracks list from HLS
+        availableTracks = audioTracks.map((track, index) => ({
+          index: index,
+          name: track.name || `Track ${index + 1}`,
+          language: track.lang || track.language,
+          codec: track.codec,
+          channels: track.channels,
+          source: 'hls'
+        }));
         
         if (audioTracks.length > 0) {
           const activeTrack = audioTracks[activeTrackId];
@@ -57,6 +97,14 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, 
 
       // Fallback to native HTML5 audio tracks
       if (!activeTrackInfo && video.audioTracks && video.audioTracks.length > 0) {
+        // Build available tracks list from native tracks
+        availableTracks = Array.from(video.audioTracks).map((track, index) => ({
+          index: index,
+          name: track.label || `Track ${index + 1}`,
+          language: track.language,
+          source: 'native'
+        }));
+
         for (let i = 0; i < video.audioTracks.length; i++) {
           const track = video.audioTracks[i];
           if (track.enabled) {
@@ -71,8 +119,19 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, 
         }
       }
 
-      // If no specific track is detected but we have audio, assume first stream
+      // Fallback to videoInfo audio streams
       if (!activeTrackInfo && videoInfo && videoInfo.audioStreams && videoInfo.audioStreams.length > 0) {
+        // Build available tracks list from video info
+        availableTracks = videoInfo.audioStreams.map((stream, index) => ({
+          index: index,
+          name: stream.title || stream.language || `Track ${index + 1}`,
+          language: stream.language,
+          codec: stream.codec,
+          channels: stream.channels,
+          channelLayout: stream.channelLayout,
+          source: 'videoInfo'
+        }));
+
         activeTrackInfo = {
           index: 0,
           name: 'Default Audio',
@@ -81,7 +140,10 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, 
       }
 
       console.log('Detected active audio track:', activeTrackInfo);
+      console.log('Available audio tracks:', availableTracks);
+      
       setActiveAudioTrack(activeTrackInfo);
+      setAvailableAudioTracks(availableTracks);
       
       // Notify parent component
       if (onActiveAudioStreamChange) {
@@ -329,6 +391,13 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, 
       }
     };
   }, [videoKey]);
+
+  // Expose switchAudioTrack function to parent component
+  useEffect(() => {
+    if (onSwitchAudioTrackRef) {
+      onSwitchAudioTrackRef(switchAudioTrack);
+    }
+  }, [onSwitchAudioTrackRef, switchAudioTrack]);
 
   const handleProgressReady = () => {
     setProgressReady(true);
@@ -619,6 +688,31 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking, 
             style={{ width: '80px' }}
           />
         </div>
+        
+        {/* Audio Track Selection */}
+        {availableAudioTracks.length > 1 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ fontSize: '0.8rem', color: '#888' }}>Audio:</span>
+            <select
+              value={activeAudioTrack?.index || 0}
+              onChange={(e) => switchAudioTrack(parseInt(e.target.value))}
+              style={{
+                backgroundColor: '#3a3a3a',
+                color: '#fff',
+                border: '1px solid #555',
+                borderRadius: '3px',
+                padding: '0.25rem',
+                fontSize: '0.8rem'
+              }}
+            >
+              {availableAudioTracks.map((track, index) => (
+                <option key={index} value={track.index}>
+                  {track.name} {track.language ? `(${track.language})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '1rem' }}>
           {/* Keyboard shortcuts help */}

@@ -1,6 +1,6 @@
 import React from 'react';
 
-function AudioLayoutDisplay({ videoInfo, activeAudioTrack }) {
+function AudioLayoutDisplay({ videoInfo, activeAudioTrack, onAudioTrackSelect }) {
   if (!videoInfo || !videoInfo.audioStreams || videoInfo.audioStreams.length === 0) {
     return (
       <div style={{
@@ -94,8 +94,22 @@ function AudioLayoutDisplay({ videoInfo, activeAudioTrack }) {
                 borderRadius: '3px',
                 fontSize: '0.8rem',
                 border: isActive ? '2px solid #4ade80' : '2px solid transparent',
-                position: 'relative'
+                position: 'relative',
+                cursor: onAudioTrackSelect ? 'pointer' : 'default',
+                transition: 'all 0.2s ease'
               }}
+              onClick={() => onAudioTrackSelect && onAudioTrackSelect(index)}
+              onMouseEnter={(e) => {
+                if (onAudioTrackSelect && !isActive) {
+                  e.target.style.backgroundColor = '#4a4a4a';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (onAudioTrackSelect && !isActive) {
+                  e.target.style.backgroundColor = '#3a3a3a';
+                }
+              }}
+              title={onAudioTrackSelect && !isActive ? 'Click to select this audio stream' : isActive ? 'Currently active audio stream' : ''}
             >
             <div style={{
               display: 'flex',

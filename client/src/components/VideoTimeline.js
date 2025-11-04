@@ -3,7 +3,7 @@ import api from '../services/api';
 import WaveformDisplay from './WaveformDisplay';
 import AudioLayoutDisplay from './AudioLayoutDisplay';
 
-function VideoTimeline({ videoInfo, currentTime, onSeek, videoKey, activeAudioTrack }) {
+function VideoTimeline({ videoInfo, currentTime, onSeek, videoKey, activeAudioTrack, onAudioTrackSelect }) {
   const [thumbnails, setThumbnails] = useState([]);
   const [waveform, setWaveform] = useState(null);
   const [waveformLoading, setWaveformLoading] = useState(false);
@@ -343,7 +343,7 @@ function VideoTimeline({ videoInfo, currentTime, onSeek, videoKey, activeAudioTr
       </div>
       
       {/* Audio Layout Information */}
-      <AudioLayoutDisplay videoInfo={videoInfo} activeAudioTrack={activeAudioTrack} />
+      <AudioLayoutDisplay videoInfo={videoInfo} activeAudioTrack={activeAudioTrack} onAudioTrackSelect={onAudioTrackSelect} />
     </div>
   );
 }
