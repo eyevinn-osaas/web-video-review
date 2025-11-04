@@ -454,8 +454,11 @@ class VideoService {
               bitsPerSample: stream.bits_per_sample || null,
               language: stream.tags?.language || null,
               title: stream.tags?.title || null,
-              duration: parseFloat(stream.duration) || parseFloat(metadata.format.duration)
-            })) : []
+              duration: parseFloat(stream.duration) || parseFloat(metadata.format.duration),
+              isMono: parseInt(stream.channels) === 1
+            })) : [],
+            // Detect mono stream combinations for stereo pairing
+            monoStreamCombinations: this._detectMonoStreamCombinations(audioStreams)
           };
           
           // Cache the video info for future use
@@ -725,24 +728,66 @@ class VideoService {
       `[v2]fps=1/${segmentDuration},scale=320:180[thumbs]`
     ].join(';');
     
-    // Add video mapping
+    // Handle audio stream mappings with mono stream combination logic
+    let finalFilterComplex = filterComplex;
+    let hasMonoCombination = false;
+    
+    if (hasAudio && videoInfo.audioStreams && videoInfo.audioStreams.length > 0) {
+      if (videoInfo.monoStreamCombinations && videoInfo.monoStreamCombinations.canCombineFirstTwo) {
+        // Combine first two mono streams into stereo
+        const combo = videoInfo.monoStreamCombinations;
+        hasMonoCombination = true;
+        
+        // Add amerge filter for stereo combination
+        const amergeFilter = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo0]`;
+        finalFilterComplex = finalFilterComplex + ';' + amergeFilter;
+        
+        // Map the combined stereo stream
+        ffmpegArgs.push('-map', '[stereo0]');
+        
+        // Add remaining mono/stereo streams after the combined pair
+        let outputIndex = 1;
+        videoInfo.audioStreams.forEach((stream, index) => {
+          if (index !== combo.stream1Index && index !== combo.stream2Index) {
+            ffmpegArgs.push('-map', `0:a:${index}`);
+            outputIndex++;
+          }
+        });
+        
+        // Add metadata for combined stereo track
+        ffmpegArgs.push('-metadata:s:a:0', `language=${combo.resultLanguage || 'und'}`);
+        ffmpegArgs.push('-metadata:s:a:0', `title=${combo.resultTitle}`);
+        
+        // Add metadata for remaining tracks
+        outputIndex = 1;
+        videoInfo.audioStreams.forEach((stream, index) => {
+          if (index !== combo.stream1Index && index !== combo.stream2Index) {
+            const language = stream.language || 'und';
+            const title = stream.title || `Track ${outputIndex + 1}`;
+            ffmpegArgs.push('-metadata:s:a:' + outputIndex, `language=${language}`);
+            ffmpegArgs.push('-metadata:s:a:' + outputIndex, `title=${title}`);
+            outputIndex++;
+          }
+        });
+      } else {
+        // Standard mapping for non-mono or non-combinable streams
+        videoInfo.audioStreams.forEach((stream, index) => {
+          ffmpegArgs.push('-map', `0:a:${index}`);
+          
+          // Add metadata for each audio stream
+          const language = stream.language || 'und';
+          const title = stream.title || `Track ${index + 1}`;
+          ffmpegArgs.push('-metadata:s:a:' + index, `language=${language}`);
+          ffmpegArgs.push('-metadata:s:a:' + index, `title=${title}`);
+        });
+      }
+    }
+    
+    // Add filter complex and video mapping
     ffmpegArgs.push(
-      '-filter_complex', filterComplex,
+      '-filter_complex', finalFilterComplex,
       '-map', '[hls]'
     );
-    
-    // Add all audio stream mappings if audio exists
-    if (hasAudio && videoInfo.audioStreams && videoInfo.audioStreams.length > 0) {
-      videoInfo.audioStreams.forEach((stream, index) => {
-        ffmpegArgs.push('-map', `0:a:${index}`);
-        
-        // Add metadata for each audio stream
-        const language = stream.language || 'und';
-        const title = stream.title || `Track ${index + 1}`;
-        ffmpegArgs.push('-metadata:s:a:' + index, `language=${language}`);
-        ffmpegArgs.push('-metadata:s:a:' + index, `title=${title}`);
-      });
-    }
     
     // Add hardware acceleration and video encoding settings
     const hwAccel = this.hwAccel;
@@ -1127,6 +1172,36 @@ class VideoService {
     return channelLayouts[channels] || `${channels} channels`;
   }
 
+  _detectMonoStreamCombinations(audioStreams) {
+    if (!audioStreams || audioStreams.length < 2) {
+      return null;
+    }
+
+    // Check if we have at least 2 mono streams
+    const monoStreams = audioStreams.filter(stream => parseInt(stream.channels) === 1);
+    
+    if (monoStreams.length >= 2) {
+      // Check if first two mono streams have compatible properties
+      const stream1 = monoStreams[0];
+      const stream2 = monoStreams[1];
+      
+      // They should have same sample rate and codec for best results
+      const compatible = stream1.sample_rate === stream2.sample_rate && 
+                        stream1.codec_name === stream2.codec_name;
+      
+      return {
+        canCombineFirstTwo: true,
+        compatible: compatible,
+        stream1Index: audioStreams.findIndex(s => s === stream1),
+        stream2Index: audioStreams.findIndex(s => s === stream2),
+        resultTitle: `${stream1.tags?.title || 'Track 1'} + ${stream2.tags?.title || 'Track 2'} (Stereo)`,
+        resultLanguage: stream1.tags?.language || stream2.tags?.language || null
+      };
+    }
+    
+    return null;
+  }
+
   async loadNewVideo(s3Key) {
     // Check if this is a different video than currently loaded
     if (this.currentlyLoadedVideo && this.currentlyLoadedVideo !== s3Key) {
@@ -1375,8 +1450,12 @@ class VideoService {
     try {
       console.log(`[Waveform] Generating audio waveform for ${s3Key} with ${samples} samples`);
       
-      // Check cache first
-      const waveformCacheKey = `waveform:${s3Key}:${samples}`;
+      // Get video info to determine duration and mono combinations
+      const videoInfo = await this.getVideoInfo(s3Key);
+      
+      // Create cache key that includes mono combination info
+      const hasMonoCombination = videoInfo.monoStreamCombinations && videoInfo.monoStreamCombinations.canCombineFirstTwo;
+      const waveformCacheKey = `waveform:${s3Key}:${samples}:${hasMonoCombination ? 'combined' : 'standard'}`;
       
       if (!this.waveformCache) {
         this.waveformCache = new Map();
@@ -1386,9 +1465,6 @@ class VideoService {
         console.log(`[Waveform] Returning cached waveform for ${s3Key}`);
         return this.waveformCache.get(waveformCacheKey);
       }
-      
-      // Get video info to determine duration
-      const videoInfo = await this.getVideoInfo(s3Key);
       
       if (!videoInfo.audio) {
         console.log(`[Waveform] No audio track found in ${s3Key}`);
@@ -1401,7 +1477,7 @@ class VideoService {
       }
       
       // Generate waveform data using FFmpeg
-      const waveformData = await this._generateWaveformData(s3Key, videoInfo.duration, samples);
+      const waveformData = await this._generateWaveformData(s3Key, videoInfo, samples);
       
       // Cache the result
       this.waveformCache.set(waveformCacheKey, waveformData);
@@ -1415,9 +1491,10 @@ class VideoService {
     }
   }
 
-  async _generateWaveformData(s3Key, duration, samples) {
+  async _generateWaveformData(s3Key, videoInfo, samples) {
     return new Promise(async (resolve, reject) => {
       let inputSource;
+      const duration = videoInfo.duration;
       
       // Try to use local cached file first, otherwise fall back to signed URL
       if (this.enableLocalCache) {
@@ -1444,10 +1521,26 @@ class VideoService {
       
       console.log(`[Waveform] Extracting audio peaks with interval ${sampleInterval.toFixed(3)}s`);
       
+      // Determine the appropriate audio filter based on mono stream combinations
+      let audioFilter = '[0:a]compand,aresample=8000[out]';
+      let audioInput = '[0:a]';
+      
+      // Check if we have mono stream combinations
+      if (videoInfo.monoStreamCombinations && videoInfo.monoStreamCombinations.canCombineFirstTwo) {
+        const combo = videoInfo.monoStreamCombinations;
+        console.log(`[Waveform] Using combined stereo from mono streams ${combo.stream1Index} and ${combo.stream2Index}`);
+        
+        // Use amerge filter to combine the mono streams, then process for waveform
+        audioFilter = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo];[stereo]compand,aresample=8000[out]`;
+        audioInput = '[stereo]';
+      } else {
+        console.log(`[Waveform] Using standard first audio stream`);
+      }
+      
       // Use FFmpeg to extract audio amplitude data
       const ffmpeg = spawn('ffmpeg', [
         '-i', inputSource,
-        '-filter_complex', `[0:a]compand,aresample=8000[out]`,
+        '-filter_complex', audioFilter,
         '-map', '[out]',
         '-f', 'f32le',
         '-ac', '1',
