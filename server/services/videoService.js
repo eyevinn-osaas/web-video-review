@@ -637,8 +637,11 @@ class VideoService {
     );
     
     // Second output: Thumbnail generation
+    // Extract thumbnails from the middle of each segment for better representation
+    const thumbnailOffset = segmentDuration / 2; // Start from middle of first segment
     ffmpegArgs.push(
       '-map', hasAudio ? '0:v:0' : '1:v:0', // Map video stream for thumbnails
+      '-ss', thumbnailOffset.toString(), // Start from middle of first segment
       '-vf', `fps=1/${segmentDuration},scale=320:180`, // One thumbnail per segment, scaled down
       '-q:v', '3', // High quality for thumbnails
       '-f', 'image2',
@@ -647,6 +650,7 @@ class VideoService {
     );
     
     console.log(`[Native Live HLS] FFmpeg command: ffmpeg ${ffmpegArgs.join(' ')}`);
+    console.log(`[Native Live HLS] Thumbnails will be extracted at: ${Array.from({length: Math.ceil(videoInfo.duration / segmentDuration)}, (_, i) => `${(thumbnailOffset + i * segmentDuration).toFixed(1)}s`).join(', ')}`);
     
     return new Promise((resolve, reject) => {
       const ffmpeg = spawn('ffmpeg', ffmpegArgs);
