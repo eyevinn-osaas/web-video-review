@@ -16,6 +16,7 @@ function VideoProgressBar({ videoKey, onReady }) {
   useEffect(() => {
     if (!videoKey) return;
 
+
     let pollInterval;
     
     const pollProgress = async () => {
@@ -89,15 +90,25 @@ function VideoProgressBar({ videoKey, onReady }) {
 
   // Only hide progress bar when explicitly ready and after showing status
   if (progress.ready && progress.status === 'ready' && progress.overallProgress >= 100) {
-    // Small delay to show the completion state
+    // Small delay to show the completion state, then hide
     setTimeout(() => {
       if (onReady) {
         onReady();
       }
-    }, 2000);
+    }, 1000); // Reduced delay for faster MP4 response
     
-    // Show completion state briefly
+    // For processed files, show "Ready to play" briefly before hiding
+    const isComplete = progress.downloadProgress === 100 && progress.processingProgress === 100;
+    if (isComplete) {
+      setTimeout(() => {
+        if (onReady) {
+          onReady();
+        }
+      }, 500); // Short delay to show completion
+      return null; // Hide for completed files
+    }
   }
+
 
   return (
     <div style={{

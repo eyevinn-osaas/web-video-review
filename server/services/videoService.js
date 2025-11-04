@@ -1428,6 +1428,7 @@ class VideoService {
       let status = 'initializing';
       let message = 'Preparing video...';
 
+
       // Progress endpoint is now read-only - HLS generation is triggered by playlist requests
 
       // Check download progress

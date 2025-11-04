@@ -22,9 +22,11 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking }
 
     const video = videoRef.current;
     
-    // Reset progress states for new video
+    // Reset all player states for new video
     setShowProgress(true);
     setProgressReady(false);
+    setIsPlaying(false);
+    setError(null);
     
     const initializePlayer = () => {
       if (hlsRef.current) {
@@ -36,7 +38,6 @@ function VideoPlayer({ videoKey, videoInfo, currentTime, onTimeUpdate, seeking }
       setIsBuffering(true);
       
       // Initialize HLS immediately - this will trigger generation if needed
-
       if (Hls.isSupported()) {
         const hls = new Hls({
           enableWorker: true,
