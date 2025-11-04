@@ -722,14 +722,26 @@ class VideoService {
     const thumbnailOffset = segmentDuration / 2;
     const maxThumbnails = Math.ceil(videoInfo.duration / segmentDuration);
     
+    // Check for mono stream combinations first
+    const hasMonoCombination = hasAudio && videoInfo.audioStreams && videoInfo.audioStreams.length > 0 && 
+                              videoInfo.monoStreamCombinations && videoInfo.monoStreamCombinations.canCombineFirstTwo;
+
     // Complex filter graph: split input, apply different filters to each branch
     // Use setpts to reset timestamps and basic SMPTE format
     let videoFilterChain = '';
     let goniometerFilter = '';
+    let stereoFilter = '';
     
     if (showGoniometer && hasAudio) {
-      // Create goniometer overlay using avectorscope (300x300, bottom left)
-      goniometerFilter = `[0:a]avectorscope=size=300x300:zoom=1.5:draw=line:rf=30:gf=30:bf=30[gonio]`;
+      if (hasMonoCombination) {
+        // Create stereo combination for goniometer
+        const combo = videoInfo.monoStreamCombinations;
+        stereoFilter = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo0]`;
+        goniometerFilter = `[stereo0]avectorscope=size=300x300:zoom=1.5:draw=line:rf=30:gf=30:bf=30[gonio]`;
+      } else {
+        // Use first audio stream for goniometer
+        goniometerFilter = `[0:a]avectorscope=size=300x300:zoom=1.5:draw=line:rf=30:gf=30:bf=30[gonio]`;
+      }
       videoFilterChain = `[${videoInputForFilter}]split=2[v1][v2];[v1]setpts=PTS-STARTPTS,scale=1280:720[v1scaled];[gonio]scale=300:300[goniosized];[v1scaled][goniosized]overlay=20:H-h-20,drawtext=text='%{pts\\:hms}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10[hls]`;
     } else {
       // No goniometer for videos without audio or when disabled
@@ -738,6 +750,7 @@ class VideoService {
     }
     
     const filterComplex = [
+      stereoFilter,
       goniometerFilter,
       videoFilterChain,
       `[v2]fps=1/${segmentDuration},scale=320:180[thumbs]`
@@ -745,17 +758,16 @@ class VideoService {
     
     // Handle audio stream mappings with mono stream combination logic
     let finalFilterComplex = filterComplex;
-    let hasMonoCombination = false;
     
     if (hasAudio && videoInfo.audioStreams && videoInfo.audioStreams.length > 0) {
       if (videoInfo.monoStreamCombinations && videoInfo.monoStreamCombinations.canCombineFirstTwo) {
-        // Combine first two mono streams into stereo
         const combo = videoInfo.monoStreamCombinations;
-        hasMonoCombination = true;
         
-        // Add amerge filter for stereo combination
-        const amergeFilter = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo0]`;
-        finalFilterComplex = finalFilterComplex + ';' + amergeFilter;
+        if (!hasMonoCombination) {
+          // No goniometer, but still need stereo combination for audio output
+          const amergeFilter = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo0]`;
+          finalFilterComplex = finalFilterComplex + ';' + amergeFilter;
+        }
         
         // Map the combined stereo stream
         ffmpegArgs.push('-map', '[stereo0]');
