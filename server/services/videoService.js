@@ -760,14 +760,6 @@ class VideoService {
       `[v2]fps=1/${segmentDuration},scale=320:180[thumbs]`
     ].filter(Boolean).join(';');
     
-    console.log(`[Native Live HLS] Filter components:`, {
-      stereoFilter,
-      goniometerFilter,
-      videoFilterChain,
-      hasMonoCombination
-    });
-    console.log(`[Native Live HLS] Filter complex: ${filterComplex}`);
-    
     // Handle audio stream mappings with mono stream combination logic
     let finalFilterComplex = filterComplex;
     
