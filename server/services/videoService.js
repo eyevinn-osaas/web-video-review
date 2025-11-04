@@ -735,13 +735,19 @@ class VideoService {
     // Create stereo filter if needed for mono combinations
     if (hasMonoCombination) {
       const combo = videoInfo.monoStreamCombinations;
-      stereoFilter = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo0]`;
+      if (showGoniometer && hasAudio) {
+        // Need to split stereo output for both goniometer and audio mapping
+        stereoFilter = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo_temp];[stereo_temp]asplit=2[stereo0][stereo_gonio]`;
+      } else {
+        // Only need stereo for audio mapping
+        stereoFilter = `[0:a:${combo.stream1Index}][0:a:${combo.stream2Index}]amerge=inputs=2[stereo0]`;
+      }
     }
     
     if (showGoniometer && hasAudio) {
       if (hasMonoCombination) {
-        // Use combined stereo for goniometer
-        goniometerFilter = `[stereo0]avectorscope=size=300x300:zoom=1.5:draw=line:rf=30:gf=30:bf=30[gonio]`;
+        // Use split stereo for goniometer
+        goniometerFilter = `[stereo_gonio]avectorscope=size=300x300:zoom=1.5:draw=line:rf=30:gf=30:bf=30[gonio]`;
       } else {
         // Use first audio stream for goniometer
         goniometerFilter = `[0:a]avectorscope=size=300x300:zoom=1.5:draw=line:rf=30:gf=30:bf=30[gonio]`;
