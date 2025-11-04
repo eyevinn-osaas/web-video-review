@@ -73,7 +73,7 @@ router.get('/:key/stream', async (req, res) => {
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'no-cache');
     
-    const videoStream = videoService.streamVideoChunk(key, parseFloat(startTime), duration ? parseFloat(duration) : null);
+    const videoStream = await videoService.streamVideoChunk(key, parseFloat(startTime), duration ? parseFloat(duration) : null);
     
     videoStream.on('error', (error) => {
       console.error('Video stream error:', error);
@@ -314,7 +314,7 @@ router.get('/:key/seek', async (req, res) => {
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'no-cache');
     
-    const videoStream = videoService.streamVideoChunk(key, parseFloat(seekTime), parseFloat(duration));
+    const videoStream = await videoService.streamVideoChunk(key, parseFloat(seekTime), parseFloat(duration));
     
     videoStream.on('error', (error) => {
       console.error('Seek stream error:', error);

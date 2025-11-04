@@ -457,8 +457,13 @@ class VideoService {
     }
   }
 
-  streamVideoChunk(s3Key, startTime = 0, duration = null) {
+  async streamVideoChunk(s3Key, startTime = 0, duration = null) {
     const signedUrl = s3Service.getSignedUrl(s3Key, 3600);
+    
+    // Get video info for dynamic frame rate detection
+    const videoInfo = await this.getVideoInfo(s3Key);
+    const sourceFps = (videoInfo && videoInfo.video && videoInfo.video.fps) ? Math.round(videoInfo.video.fps) : 25;
+    console.log(`[Stream Chunk] Using source frame rate ${sourceFps}fps for SMPTE timecode`);
     
     const ffmpegArgs = [
       '-i', signedUrl,
@@ -477,6 +482,7 @@ class VideoService {
       '-b:v', '1500k',
       '-maxrate', '1500k',
       '-bufsize', '3M',
+      '-vf', `drawtext=text='%{pts\\:hms\\:${sourceFps}}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10`,
       '-r', '25',
       '-s', '1280x720',
       '-c:a', 'aac',
