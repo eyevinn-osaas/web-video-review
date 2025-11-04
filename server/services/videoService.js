@@ -542,6 +542,10 @@ class VideoService {
     
     console.log(`[Native Live HLS] Video duration: ${videoInfo.duration}s, audio: ${hasAudio}`);
     
+    if (isMxfSource) {
+      console.log(`[Native Live HLS] Processing MXF file with special handling for duration and timing`);
+    }
+    
     // Create temporary directory for HLS output
     const tempDir = path.join('/tmp/videoreview', 'live-hls', s3Key.replace(/[^a-zA-Z0-9.-]/g, '_'));
     await fs.mkdir(tempDir, { recursive: true });
@@ -705,6 +709,20 @@ class VideoService {
         const thumbMatch = stderr.match(/Writing application.*thumb(\d+)\.jpg/);
         if (thumbMatch) {
           console.log(`[Native Live HLS] Thumbnail ${thumbMatch[1]} being created`);
+        }
+        
+        // Enhanced logging for MXF processing
+        if (isMxfSource) {
+          if (stderr.includes('time=')) {
+            const timeMatch = stderr.match(/time=(\d+:\d+:\d+\.\d+)/);
+            if (timeMatch) {
+              console.log(`[Native Live HLS] MXF Progress: ${timeMatch[1]} / ${Math.floor(videoInfo.duration/3600)}:${Math.floor((videoInfo.duration%3600)/60).toString().padStart(2,'0')}:${Math.floor(videoInfo.duration%60).toString().padStart(2,'0')}`);
+            }
+          }
+          
+          if (stderr.includes('Conversion failed') || stderr.includes('error')) {
+            console.error(`[Native Live HLS] MXF Processing error: ${stderr.slice(-200)}`);
+          }
         }
       });
       
@@ -1022,21 +1040,25 @@ class VideoService {
       
       if (isMxfSource) {
         // Special audio timestamp handling for MXF files
+        // Note: Avoiding -shortest for MXF files as it can cause premature termination
         ffmpegArgs.push(
           '-async', '1', // Audio/video sync
-          '-af', 'aresample=async=1:first_pts=0', // Resample with proper PTS
-          '-shortest' // Ensure audio doesn't extend beyond video
+          '-af', 'aresample=async=1:first_pts=0' // Resample with proper PTS
         );
       }
     } else {
       // Silent audio for videos without audio tracks (already configured as input above)
+      // Note: For MXF files, avoid -shortest as it can cause premature termination
       ffmpegArgs.push(
         '-c:a', 'aac',
         '-b:a', '64k',
         '-ac', '2',
-        '-ar', '44100',
-        '-shortest'
+        '-ar', '44100'
       );
+      
+      if (!isMxfSource) {
+        ffmpegArgs.push('-shortest');
+      }
     }
     
     ffmpegArgs.push(
@@ -1059,8 +1081,10 @@ class VideoService {
         '-muxpreload', '0', // No preload delay
         '-muxdelay', '0', // No mux delay
         '-avoid_negative_ts', 'make_zero', // Ensure no negative timestamps
-        '-map_metadata', '-1' // Remove metadata that might interfere with timing
+        '-map_metadata', '-1', // Remove metadata that might interfere with timing
+        '-t', videoInfo.duration.toString() // Explicitly specify duration for MXF files
       );
+      console.log(`[Native Live HLS] MXF file detected, explicitly setting duration to ${videoInfo.duration}s`);
     } else {
       ffmpegArgs.push(
         '-fflags', '+genpts+igndts' // Standard settings for MP4 sources
