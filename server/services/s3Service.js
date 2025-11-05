@@ -4,10 +4,10 @@ class S3Service {
   constructor() {
     // Build S3 configuration
     const s3Config = {
-      endpoint: process.env.S3_ENDPOINT,
+      endpoint: process.env.S3_ENDPOINT ? process.env.S3_ENDPOINT : undefined,
       accessKeyId: process.env.S3_ACCESS_KEY_ID,
       secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
-      region: process.env.S3_REGION,
+      region: process.env.S3_REGION ? process.env.S3_REGION : undefined,
       s3ForcePathStyle: true,
       signatureVersion: 'v4'
     };
@@ -22,8 +22,8 @@ class S3Service {
     
     // Log configuration status (without sensitive details)
     console.log('[S3Service] Initialized with:', {
-      endpoint: process.env.S3_ENDPOINT,
-      region: process.env.S3_REGION,
+      endpoint: process.env.S3_ENDPOINT ? process.env.S3_ENDPOINT : undefined,
+      region: process.env.S3_REGION ? process.env.S3_REGION : undefined,
       bucket: this.bucket,
       hasAccessKey: !!process.env.S3_ACCESS_KEY_ID,
       hasSecretKey: !!process.env.S3_SECRET_ACCESS_KEY,
