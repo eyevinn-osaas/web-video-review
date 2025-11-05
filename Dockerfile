@@ -118,6 +118,7 @@ EXPOSE ${PORT:-3001} 80
 
 VOLUME [ "/data" ]
 ENV LOCAL_CACHE_DIR=/data
+ENV MAX_LOCAL_CACHE_SIZE=64424509440
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
