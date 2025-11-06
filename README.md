@@ -22,6 +22,24 @@ A professional web application for reviewing broadcast video files stored in S3-
 
 ![Video Analysis Tools](screenshot2.png)
 
+## 🚀 Instant Cloud Deployment
+
+**Skip the setup and deploy instantly!** Get Web Video Review running in the cloud with just a few clicks - no infrastructure management required.
+
+[![Deploy on Open Source Cloud](https://img.shields.io/badge/Deploy%20on-Open%20Source%20Cloud-blue?style=for-the-badge&logo=cloud)](https://app.osaas.io/browse/eyevinn-web-video-review)
+
+### Why Choose Open Source Cloud?
+
+- **⚡ Deploy in seconds** - No Docker, servers, or configuration needed
+- **🔐 Secure by default** - Enterprise-grade security and data protection
+- **📈 Auto-scaling** - Handles traffic spikes automatically
+- **💰 Cost-effective** - Pay only for what you use, no infrastructure overhead
+- **🛠️ Fully managed** - Automatic updates, backups, and monitoring included
+
+Simply click the deploy button above, add your S3 credentials, and start reviewing videos immediately!
+
+---
+
 ## Architecture
 
 ### Backend (Node.js)
