@@ -1156,7 +1156,36 @@ class VideoService {
         clearTimeout(earlyResolveTimeout);
         
         if (isResolved) {
-          console.log(`[Native Live HLS] FFmpeg process completed with code ${code}`);
+          console.log(`[Native Live HLS] FFmpeg process completed with code ${code} (early resolved)`);
+          
+          // Even though we resolved early, we should still update the thumbnail count
+          if (code === 0) {
+            try {
+              // Count actual thumbnails generated
+              const thumbnailFiles = await fs.readdir(tempDir);
+              const actualThumbnails = thumbnailFiles.filter(file => file.match(/^thumb\d{3}\.jpg$/));
+              const actualThumbnailCount = actualThumbnails.length;
+              
+              console.log(`[Native Live HLS] Post-completion thumbnail update: found ${actualThumbnailCount} thumbnails (expected ${maxThumbnails})`);
+              
+              // Update the existing cache entry with actual thumbnail info
+              if (this.nativeHlsCache && this.nativeHlsCache.has(s3Key)) {
+                const existingEntry = this.nativeHlsCache.get(s3Key);
+                this.nativeHlsCache.set(s3Key, {
+                  ...existingEntry,
+                  actualThumbnailCount,
+                  expectedThumbnailCount: maxThumbnails,
+                  thumbnailFiles: actualThumbnails.sort(),
+                  manifestUpdated: true
+                });
+                
+                console.log(`[Native Live HLS] Thumbnail manifest updated post-completion - clients will now see ${actualThumbnailCount} thumbnails instead of ${maxThumbnails}`);
+              }
+            } catch (error) {
+              console.error(`[Native Live HLS] Failed to update thumbnail count post-completion:`, error);
+            }
+          }
+          
           return;
         }
         
@@ -1183,7 +1212,18 @@ class VideoService {
           // Count segments
           const segmentCount = (playlist.match(/segment\d+\.ts/g) || []).length;
           
-          console.log(`[Native Live HLS] Generated ${segmentCount} segments successfully`);
+          // Count actual thumbnails generated
+          const thumbnailFiles = await fs.readdir(tempDir);
+          const actualThumbnails = thumbnailFiles.filter(file => file.match(/^thumb\d{3}\.jpg$/));
+          const actualThumbnailCount = actualThumbnails.length;
+          
+          console.log(`[Native Live HLS] Generated ${segmentCount} segments and ${actualThumbnailCount} thumbnails successfully`);
+          console.log(`[Native Live HLS] Expected ${maxThumbnails} thumbnails, got ${actualThumbnailCount}`);
+          
+          if (actualThumbnailCount !== maxThumbnails) {
+            console.warn(`[Native Live HLS] Thumbnail count mismatch - expected ${maxThumbnails}, got ${actualThumbnailCount}`);
+            console.log(`[Native Live HLS] Available thumbnails: ${actualThumbnails.sort().join(', ')}`);
+          }
           
           // Store the temp directory path for segment serving
           if (!this.nativeHlsCache) {
@@ -1195,9 +1235,16 @@ class VideoService {
           this.nativeHlsCache.set(s3Key, {
             tempDir,
             segmentDuration,
+            actualThumbnailCount, // Store actual count for accurate manifest
+            expectedThumbnailCount: maxThumbnails, // Keep expected for reference
+            thumbnailFiles: actualThumbnails.sort(), // Store actual filenames
             timestamp: Date.now(),
-            createdAt: Date.now()
+            createdAt: Date.now(),
+            manifestUpdated: true // Flag indicating manifest should reflect actual count
           });
+          
+          // Log manifest update for clients
+          console.log(`[Native Live HLS] Thumbnail manifest updated - clients will now see ${actualThumbnailCount} thumbnails instead of ${maxThumbnails}`);
           
           // Clean up after 1 hour
           setTimeout(() => {
@@ -1524,16 +1571,38 @@ class VideoService {
   async getSegmentThumbnails(s3Key, segmentDuration = 10) {
     try {
       const info = await this.getVideoInfo(s3Key);
-      const segmentCount = Math.ceil(info.duration / segmentDuration);
+      const expectedSegmentCount = Math.ceil(info.duration / segmentDuration);
       const thumbnails = [];
       
       // Check if we have native HLS cache with thumbnails
       const thumbnailsHlsCacheEntry = this.nativeHlsCache && this.nativeHlsCache.get(s3Key);
       
-      for (let i = 0; i < segmentCount; i++) {
-        const thumbnailExists = thumbnailsHlsCacheEntry ? 
-          fsSync.existsSync(path.join(thumbnailsHlsCacheEntry.tempDir, `thumb${i.toString().padStart(3, '0')}.jpg`)) : 
-          false;
+      // Use actual thumbnail count if generation is complete, otherwise use expected count
+      let thumbnailCount = expectedSegmentCount;
+      let useActualFiles = false;
+      
+      if (thumbnailsHlsCacheEntry && thumbnailsHlsCacheEntry.actualThumbnailCount !== undefined) {
+        // FFmpeg process completed - use actual count and filenames
+        thumbnailCount = thumbnailsHlsCacheEntry.actualThumbnailCount;
+        useActualFiles = true;
+        console.log(`[Thumbnails] Manifest updated: returning ${thumbnailCount} actual thumbnails (was ${expectedSegmentCount} estimated)`);
+      } else {
+        this.debugLog(`[Thumbnails] Using expected count: ${thumbnailCount} thumbnails (generation in progress)`);
+      }
+      
+      for (let i = 0; i < thumbnailCount; i++) {
+        let thumbnailExists = false;
+        
+        if (thumbnailsHlsCacheEntry) {
+          if (useActualFiles && thumbnailsHlsCacheEntry.thumbnailFiles) {
+            // Use the actual list of generated files
+            const expectedFilename = `thumb${i.toString().padStart(3, '0')}.jpg`;
+            thumbnailExists = thumbnailsHlsCacheEntry.thumbnailFiles.includes(expectedFilename);
+          } else {
+            // Check filesystem (for ongoing generation)
+            thumbnailExists = fsSync.existsSync(path.join(thumbnailsHlsCacheEntry.tempDir, `thumb${i.toString().padStart(3, '0')}.jpg`));
+          }
+        }
         
         const thumbnailData = {
           segmentIndex: i,

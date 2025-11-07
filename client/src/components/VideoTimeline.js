@@ -66,6 +66,24 @@ function VideoTimeline({ videoInfo, currentTime, onSeek, videoKey, activeAudioTr
                 const updatedManifest = await api.getThumbnails(videoKey, { segmentDuration: 10 });
                 const newlyAvailable = updatedManifest.filter(t => t.exists);
                 
+                // Check if the manifest size has changed (final count vs estimated)
+                setThumbnails(prev => {
+                  if (prev.length !== updatedManifest.length) {
+                    console.log(`[Thumbnails] Manifest size changed from ${prev.length} to ${updatedManifest.length} thumbnails`);
+                    // Initialize new manifest with existing data where possible
+                    const newThumbnails = updatedManifest.map(thumb => {
+                      const existing = prev.find(t => t.segmentIndex === thumb.segmentIndex);
+                      return {
+                        ...thumb,
+                        data: existing?.data || null,
+                        loading: existing?.loading || false
+                      };
+                    });
+                    return newThumbnails;
+                  }
+                  return prev;
+                });
+                
                 // Load any newly available thumbnails
                 updatedManifest.forEach(async (thumb) => {
                   // Check current state and only load if needed
@@ -116,8 +134,24 @@ function VideoTimeline({ videoInfo, currentTime, onSeek, videoKey, activeAudioTr
                 // Stop polling when all thumbnails are loaded
                 const allGenerated = updatedManifest.every(t => t.exists);
                 if (allGenerated) {
-                  console.log('All thumbnails generated, stopping poll');
+                  console.log(`All ${updatedManifest.length} thumbnails generated, stopping poll`);
                   clearInterval(pollInterval);
+                  
+                  // Final manifest update to ensure UI reflects the correct count
+                  setThumbnails(prev => {
+                    if (prev.length !== updatedManifest.length) {
+                      console.log(`[Thumbnails] Final manifest update: ${prev.length} -> ${updatedManifest.length} thumbnails`);
+                      return updatedManifest.map(thumb => {
+                        const existing = prev.find(t => t.segmentIndex === thumb.segmentIndex);
+                        return {
+                          ...thumb,
+                          data: existing?.data || null,
+                          loading: false
+                        };
+                      });
+                    }
+                    return prev;
+                  });
                 } else {
                   console.log(`Progress: ${newlyAvailable.length}/${updatedManifest.length} thumbnails available`);
                 }
