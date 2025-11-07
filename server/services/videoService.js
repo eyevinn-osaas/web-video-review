@@ -949,10 +949,13 @@ class VideoService {
       info: processInfo
     });
     
+    console.log(`[Memory Monitor] Added HLS process to tracking: ${cacheKey}`);
+    
     try {
       const result = await processPromise;
       return result;
     } finally {
+      console.log(`[Memory Monitor] Removing HLS process from tracking: ${cacheKey}`);
       this.activeProcesses.delete(cacheKey);
       this.hlsGenerationInProgress.delete(s3Key);
     }
@@ -1325,7 +1328,7 @@ class VideoService {
       // Store process PID for memory monitoring
       if (processInfo) {
         processInfo.pid = ffmpeg.pid;
-        console.log(`[Memory Monitor] FFmpeg HLS process started with PID: ${ffmpeg.pid}`);
+        console.log(`[Memory Monitor] FFmpeg HLS process started with PID: ${ffmpeg.pid}, tracking active: ${this.activeProcesses.size} processes`);
       }
       
       let stderr = '';
@@ -2227,10 +2230,13 @@ class VideoService {
       info: processInfo
     });
     
+    console.log(`[Memory Monitor] Added EBU R128 process to tracking: ${cacheKey}`);
+    
     try {
       const result = await analysisPromise;
       return result;
     } finally {
+      console.log(`[Memory Monitor] Removing EBU R128 process from tracking: ${cacheKey}`);
       this.activeProcesses.delete(cacheKey);
     }
   }
@@ -2303,7 +2309,7 @@ class VideoService {
         // Store process PID for memory monitoring
         if (processInfo) {
           processInfo.pid = ffmpeg.pid;
-          console.log(`[Memory Monitor] FFmpeg EBU R128 process started with PID: ${ffmpeg.pid}`);
+          console.log(`[Memory Monitor] FFmpeg EBU R128 process started with PID: ${ffmpeg.pid}, tracking active: ${this.activeProcesses.size} processes`);
         }
         
         let stderrOutput = '';
