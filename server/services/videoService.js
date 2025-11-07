@@ -29,7 +29,7 @@ class VideoService {
     this.localCacheDir = process.env.LOCAL_CACHE_DIR || '/tmp/videoreview';
     this.maxLocalCacheSize = parseInt(process.env.MAX_LOCAL_CACHE_SIZE) || 10 * 1024 * 1024 * 1024; // 10GB default
     this.enableLocalCache = process.env.ENABLE_LOCAL_CACHE !== 'false'; // Enable by default
-    this.debugLogging = process.env.DEBUG === 'true' || process.env.NODE_ENV === 'development' || process.env.DEBUG_MEMORY === 'true'; // Debug logging control
+    this.debugLogging = process.env.DEBUG === 'true' || process.env.NODE_ENV === 'development'; // Debug logging control
     
     // Create cache directory if it doesn't exist
     this.initializeCacheDirectory();
@@ -41,10 +41,6 @@ class VideoService {
     
     console.log(`Platform: ${this.platform} ${this.arch}`);
     console.log(`Hardware acceleration: ${this.hwAccel.type || 'software only'}`);
-    
-    // Memory monitoring for FFmpeg processes
-    this.processMemoryStats = new Map(); // Track memory usage per process
-    this.startMemoryMonitoring();
   }
 
   detectHardwareAcceleration() {
@@ -99,256 +95,6 @@ class VideoService {
       bufsize: process.env.FFMPEG_BUFSIZE || '1M',
       maxrate: process.env.FFMPEG_MAXRATE || '1000k'
     };
-  }
-
-  // Memory monitoring for FFmpeg processes
-  startMemoryMonitoring() {
-    // Monitor memory every 5 seconds
-    setInterval(() => {
-      this.updateProcessMemoryStats();
-    }, 5000);
-  }
-
-  async updateProcessMemoryStats() {
-    const memoryStats = new Map();
-    
-    if (this.debugLogging) {
-      console.log(`[Memory Monitor] Checking ${this.activeProcesses.size} active processes`);
-    }
-    
-    for (const [key, processEntry] of this.activeProcesses) {
-      // Handle both new structure {promise, info} and legacy direct info
-      const processInfo = processEntry.info || processEntry;
-      
-      if (processInfo && processInfo.pid) {
-        if (this.debugLogging) {
-          console.log(`[Memory Monitor] Checking PID ${processInfo.pid} for ${processInfo.type}`);
-        }
-        
-        try {
-          const memoryUsage = await this.getProcessMemory(processInfo.pid);
-          if (memoryUsage) {
-            memoryStats.set(key, {
-              type: processInfo.type,
-              pid: processInfo.pid,
-              memory: memoryUsage,
-              startTime: processInfo.startTime,
-              videoKey: key.split('-')[0] // Extract video key from composite key
-            });
-            
-            if (this.debugLogging) {
-              console.log(`[Memory Monitor] PID ${processInfo.pid}: ${this.formatBytes(memoryUsage.rss)} RSS, ${memoryUsage.cpu.toFixed(1)}% CPU`);
-            }
-          } else {
-            if (this.debugLogging) {
-              console.log(`[Memory Monitor] No memory data for PID ${processInfo.pid}`);
-            }
-          }
-        } catch (error) {
-          // Process might have ended, remove from active processes
-          console.log(`Process ${processInfo.pid} no longer exists, removing from monitoring`);
-          this.activeProcesses.delete(key);
-        }
-      } else if (this.debugLogging) {
-        console.log(`[Memory Monitor] Skipping entry ${key}: no PID available`);
-      }
-    }
-    
-    this.processMemoryStats = memoryStats;
-    
-    if (this.debugLogging) {
-      console.log(`[Memory Monitor] Updated stats for ${memoryStats.size} processes`);
-    }
-  }
-
-  async getProcessMemory(pid) {
-    try {
-      // First try reading from /proc filesystem (works in most Linux containers)
-      if (await this.tryProcMemory(pid)) {
-        return await this.tryProcMemory(pid);
-      }
-      
-      // Fallback to ps command
-      return await this.tryPsMemory(pid);
-    } catch (error) {
-      console.log(`Failed to get memory for PID ${pid}:`, error.message);
-      return null;
-    }
-  }
-
-  async tryProcMemory(pid) {
-    try {
-      const fs = require('fs').promises;
-      
-      // Read /proc/[pid]/status for detailed memory info
-      const statusPath = `/proc/${pid}/status`;
-      const statPath = `/proc/${pid}/stat`;
-      
-      const [statusData, statData] = await Promise.all([
-        fs.readFile(statusPath, 'utf8').catch(() => null),
-        fs.readFile(statPath, 'utf8').catch(() => null)
-      ]);
-      
-      if (!statusData || !statData) {
-        return null;
-      }
-      
-      // Parse memory info from /proc/[pid]/status
-      const memoryInfo = {};
-      statusData.split('\n').forEach(line => {
-        if (line.startsWith('VmRSS:')) {
-          memoryInfo.rss = parseInt(line.split(':')[1].trim().split(' ')[0]) * 1024; // Convert KB to bytes
-        }
-        if (line.startsWith('VmSize:')) {
-          memoryInfo.vsz = parseInt(line.split(':')[1].trim().split(' ')[0]) * 1024; // Convert KB to bytes
-        }
-      });
-      
-      // Parse CPU info from /proc/[pid]/stat
-      const statFields = statData.split(' ');
-      const utime = parseInt(statFields[13]) || 0; // User time
-      const stime = parseInt(statFields[14]) || 0; // System time
-      const starttime = parseInt(statFields[21]) || 0; // Start time
-      
-      // Calculate CPU percentage (simplified)
-      const totalTime = utime + stime;
-      const uptime = Date.now() / 1000 - (starttime / 100); // Rough uptime calculation
-      const cpuPercent = uptime > 0 ? (totalTime / 100) / uptime * 100 : 0;
-      
-      // Format elapsed time
-      const elapsed = this.formatElapsedTime(uptime);
-      
-      if (memoryInfo.rss && memoryInfo.vsz) {
-        return {
-          rss: memoryInfo.rss,
-          vsz: memoryInfo.vsz,
-          cpu: Math.min(100, Math.max(0, cpuPercent)), // Clamp between 0-100
-          elapsed: elapsed
-        };
-      }
-      
-      return null;
-    } catch (error) {
-      return null;
-    }
-  }
-
-  async tryPsMemory(pid) {
-    return new Promise((resolve) => {
-      const { spawn } = require('child_process');
-      
-      if (this.platform === 'darwin' || this.platform === 'linux') {
-        // Use ps command on Unix-like systems
-        const ps = spawn('ps', ['-o', 'rss,vsz,pcpu,etime', '-p', pid.toString()]);
-        let output = '';
-        
-        ps.stdout.on('data', (data) => {
-          output += data.toString();
-        });
-        
-        ps.on('close', (code) => {
-          if (code === 0) {
-            const lines = output.trim().split('\n');
-            if (lines.length >= 2) {
-              const stats = lines[1].trim().split(/\s+/);
-              resolve({
-                rss: parseInt(stats[0]) * 1024, // RSS in bytes (ps returns KB)
-                vsz: parseInt(stats[1]) * 1024, // VSZ in bytes (ps returns KB)
-                cpu: parseFloat(stats[2]) || 0, // CPU percentage
-                elapsed: stats[3] || 'N/A' // Elapsed time
-              });
-            } else {
-              resolve(null);
-            }
-          } else {
-            resolve(null);
-          }
-        });
-        
-        ps.on('error', () => resolve(null));
-      } else if (this.platform === 'win32') {
-        // Use tasklist on Windows
-        const tasklist = spawn('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV']);
-        let output = '';
-        
-        tasklist.stdout.on('data', (data) => {
-          output += data.toString();
-        });
-        
-        tasklist.on('close', (code) => {
-          if (code === 0) {
-            const lines = output.trim().split('\n');
-            if (lines.length >= 2) {
-              const stats = lines[1].split(',');
-              if (stats.length >= 5) {
-                const memoryStr = stats[4].replace(/"/g, '').replace(/,/g, '');
-                const memoryKB = parseInt(memoryStr);
-                resolve({
-                  rss: memoryKB * 1024, // Convert KB to bytes
-                  vsz: memoryKB * 1024,
-                  cpu: 0, // CPU not available from tasklist
-                  elapsed: 'N/A'
-                });
-              } else {
-                resolve(null);
-              }
-            } else {
-              resolve(null);
-            }
-          } else {
-            resolve(null);
-          }
-        });
-        
-        tasklist.on('error', () => resolve(null));
-      } else {
-        resolve(null);
-      }
-    });
-  }
-
-  formatElapsedTime(seconds) {
-    if (!seconds || seconds < 0) return 'N/A';
-    
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = Math.floor(seconds % 60);
-    
-    if (hours > 0) {
-      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    } else {
-      return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    }
-  }
-
-  getMemoryStats() {
-    const stats = [];
-    for (const [key, stat] of this.processMemoryStats) {
-      stats.push({
-        key,
-        type: stat.type,
-        pid: stat.pid,
-        videoKey: stat.videoKey,
-        memory: {
-          rss: stat.memory.rss,
-          vsz: stat.memory.vsz,
-          rssFormatted: this.formatBytes(stat.memory.rss),
-          vszFormatted: this.formatBytes(stat.memory.vsz),
-        },
-        cpu: stat.memory.cpu,
-        elapsed: stat.memory.elapsed,
-        startTime: stat.startTime
-      });
-    }
-    return stats.sort((a, b) => b.memory.rss - a.memory.rss); // Sort by memory usage
-  }
-
-  formatBytes(bytes) {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
 
   initializeCacheDirectory() {
@@ -899,8 +645,7 @@ class VideoService {
     
     // Check if native HLS is already being generated
     if (this.activeProcesses.has(cacheKey)) {
-      const activeProcess = this.activeProcesses.get(cacheKey);
-      return activeProcess.promise || activeProcess; // Handle both new format and legacy
+      return this.activeProcesses.get(cacheKey);
     }
     
     // Check if HLS generation is already in progress for this asset (regardless of options)
@@ -935,33 +680,19 @@ class VideoService {
     
     console.log(`Starting FFmpeg native live HLS generation for ${s3Key} with ${segmentDuration}s segments${showGoniometer ? ' (with goniometer overlay)' : ''}`);
     
-    const processInfo = {
-      type: 'HLS Generation',
-      startTime: Date.now(),
-      pid: null
-    };
-    
-    const processPromise = this._generateNativeLiveHLSInternal(s3Key, segmentDuration, options, processInfo);
-    
-    // Store both process info and promise for dual access
-    this.activeProcesses.set(cacheKey, {
-      promise: processPromise,
-      info: processInfo
-    });
-    
-    console.log(`[Memory Monitor] Added HLS process to tracking: ${cacheKey}`);
+    const processPromise = this._generateNativeLiveHLSInternal(s3Key, segmentDuration, options);
+    this.activeProcesses.set(cacheKey, processPromise);
     
     try {
       const result = await processPromise;
       return result;
     } finally {
-      console.log(`[Memory Monitor] Removing HLS process from tracking: ${cacheKey}`);
       this.activeProcesses.delete(cacheKey);
       this.hlsGenerationInProgress.delete(s3Key);
     }
   }
 
-  async _generateNativeLiveHLSInternal(s3Key, segmentDuration = 10, options = {}, processInfo = null) {
+  async _generateNativeLiveHLSInternal(s3Key, segmentDuration = 10, options = {}) {
     const { showGoniometer = true, showEbuR128 = false } = options;
     // Get video info for duration calculation
     const videoInfo = await this.getVideoInfo(s3Key);
@@ -1324,12 +1055,6 @@ class VideoService {
     
     return new Promise((resolve, reject) => {
       const ffmpeg = spawn('ffmpeg', ffmpegArgs);
-      
-      // Store process PID for memory monitoring
-      if (processInfo) {
-        processInfo.pid = ffmpeg.pid;
-        console.log(`[Memory Monitor] FFmpeg HLS process started with PID: ${ffmpeg.pid}, tracking active: ${this.activeProcesses.size} processes`);
-      }
       
       let stderr = '';
       let isResolved = false;
@@ -2212,36 +1937,21 @@ class VideoService {
     // Check if EBU R128 analysis is already being processed
     if (this.activeProcesses.has(cacheKey)) {
       console.log(`[EBU R128] Analysis already in progress for ${s3Key} (${startTime}s-${startTime + duration}s), returning existing promise`);
-      const activeProcess = this.activeProcesses.get(cacheKey);
-      return activeProcess.promise || activeProcess; // Handle both new format and legacy
+      return this.activeProcesses.get(cacheKey);
     }
     
-    const processInfo = {
-      type: 'EBU R128 Analysis',
-      startTime: Date.now(),
-      pid: null
-    };
-    
-    const analysisPromise = this._getEbuR128AnalysisInternal(s3Key, startTime, duration, processInfo);
-    
-    // Store both process info and promise for dual access
-    this.activeProcesses.set(cacheKey, {
-      promise: analysisPromise,
-      info: processInfo
-    });
-    
-    console.log(`[Memory Monitor] Added EBU R128 process to tracking: ${cacheKey}`);
+    const analysisPromise = this._getEbuR128AnalysisInternal(s3Key, startTime, duration);
+    this.activeProcesses.set(cacheKey, analysisPromise);
     
     try {
       const result = await analysisPromise;
       return result;
     } finally {
-      console.log(`[Memory Monitor] Removing EBU R128 process from tracking: ${cacheKey}`);
       this.activeProcesses.delete(cacheKey);
     }
   }
 
-  async _getEbuR128AnalysisInternal(s3Key, startTime = 0, duration = 10, processInfo = null) {
+  async _getEbuR128AnalysisInternal(s3Key, startTime = 0, duration = 10) {
     try {
       const videoInfo = await this.getVideoInfo(s3Key);
       const hasAudio = videoInfo.audio !== null;
@@ -2305,13 +2015,6 @@ class VideoService {
 
       return new Promise((resolve, reject) => {
         const ffmpeg = spawn('ffmpeg', ffmpegArgs);
-        
-        // Store process PID for memory monitoring
-        if (processInfo) {
-          processInfo.pid = ffmpeg.pid;
-          console.log(`[Memory Monitor] FFmpeg EBU R128 process started with PID: ${ffmpeg.pid}, tracking active: ${this.activeProcesses.size} processes`);
-        }
-        
         let stderrOutput = '';
 
         ffmpeg.stderr.on('data', (data) => {
