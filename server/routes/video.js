@@ -491,11 +491,39 @@ router.get('/memory-stats', (req, res) => {
     res.json({
       processes: memoryStats,
       totalProcesses: memoryStats.length,
+      activeProcessesCount: videoService.activeProcesses ? videoService.activeProcesses.size : 0,
       timestamp: Date.now()
     });
   } catch (error) {
     console.error('Error getting memory statistics:', error);
     res.status(500).json({ error: 'Failed to get memory statistics' });
+  }
+});
+
+// Debug endpoint to check active processes
+router.get('/debug/active-processes', (req, res) => {
+  try {
+    const activeProcesses = [];
+    if (videoService.activeProcesses) {
+      for (const [key, processEntry] of videoService.activeProcesses) {
+        const processInfo = processEntry.info || processEntry;
+        activeProcesses.push({
+          key,
+          type: processInfo?.type || 'unknown',
+          pid: processInfo?.pid || null,
+          startTime: processInfo?.startTime || null,
+          hasPromise: !!(processEntry.promise || (typeof processEntry.then === 'function'))
+        });
+      }
+    }
+    res.json({
+      activeProcesses,
+      totalCount: activeProcesses.length,
+      timestamp: Date.now()
+    });
+  } catch (error) {
+    console.error('Error getting active processes debug info:', error);
+    res.status(500).json({ error: 'Failed to get debug info' });
   }
 });
 
