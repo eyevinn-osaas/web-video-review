@@ -648,6 +648,33 @@ class VideoService {
       return this.activeProcesses.get(cacheKey);
     }
     
+    // Check if HLS generation is already in progress for this asset (regardless of options)
+    if (this.hlsGenerationInProgress && this.hlsGenerationInProgress.has(s3Key)) {
+      console.log(`[HLS] Generation already in progress for ${s3Key}, checking for existing playlist`);
+      
+      // Check if we already have a cache entry with playlist available
+      if (this.nativeHlsCache && this.nativeHlsCache.has(s3Key)) {
+        const cacheEntry = this.nativeHlsCache.get(s3Key);
+        const playlistPath = path.join(cacheEntry.tempDir, 'playlist.m3u8');
+        const playlistTmpPath = playlistPath + '.tmp';
+        const actualPlaylistPath = require('fs').existsSync(playlistTmpPath) ? playlistTmpPath : playlistPath;
+        
+        if (require('fs').existsSync(actualPlaylistPath)) {
+          const playlist = require('fs').readFileSync(actualPlaylistPath, 'utf8');
+          console.log(`[HLS] Using existing playlist from running generation for ${s3Key}`);
+          return {
+            playlist,
+            segmentCount: 0,
+            duration: cacheEntry.duration || 0,
+            isLive: true,
+            tempDir: cacheEntry.tempDir
+          };
+        }
+      }
+      
+      console.log(`[HLS] Generation in progress for ${s3Key} but no playlist available yet, starting new generation`);
+    }
+    
     // Track HLS generation in progress
     this.hlsGenerationInProgress.add(s3Key);
     
