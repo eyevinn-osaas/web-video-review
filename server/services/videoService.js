@@ -832,6 +832,12 @@ class VideoService {
       );
     }
     
+    // Calculate thumbnail offset before using it
+    const thumbnailOffset = segmentDuration / 2;
+    
+    // For thumbnail extraction, add a separate input with offset to get segment midpoints
+    ffmpegArgs.push('-ss', thumbnailOffset.toString(), '-i', inputSource);
+    
     // Video codec will be set later based on hardware acceleration capabilities
     
     // Audio encoding
@@ -854,7 +860,7 @@ class VideoService {
     
     const inputLabel = hasAudio ? '0:v:0' : '1:v:0';
     const videoInputForFilter = hasAudio ? '0:v' : '1:v';
-    const thumbnailOffset = segmentDuration / 2;
+    const thumbnailInputForFilter = hasAudio ? '1:v' : '2:v';  // Separate offset input for thumbnails
     const maxThumbnails = Math.ceil(videoInfo.duration / segmentDuration);
     
     // Check for mono stream combinations first
@@ -894,20 +900,21 @@ class VideoService {
     // EBU R128 is now handled separately - no video overlay needed
     
     // Build video filter chain with overlays - scale down early to reduce memory usage
+    // No need to split since thumbnails now use separate input
     if (showGoniometer && hasAudio) {
-      let baseVideo = `[${videoInputForFilter}]setpts=PTS-STARTPTS,scale=1280:720,split=2[v1][v2]`;
+      let baseVideo = `[${videoInputForFilter}]setpts=PTS-STARTPTS,scale=1280:720[v1]`;
       baseVideo += `;[gonio]scale=300:300[goniosized];[v1][goniosized]overlay=w-w-20:h-h-50[v1final]`;
       videoFilterChain = baseVideo + `;[v1final]drawtext=text='%{pts\\:hms}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10[hls]`;
     } else {
       // No overlays for videos without audio or when disabled
-      videoFilterChain = `[${videoInputForFilter}]setpts=PTS-STARTPTS,scale=1280:720,split=2[v1][v2];[v1]drawtext=text='%{pts\\:hms}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10[hls]`;
+      videoFilterChain = `[${videoInputForFilter}]setpts=PTS-STARTPTS,scale=1280:720,drawtext=text='%{pts\\:hms}':fontsize=24:fontcolor=white:box=1:boxcolor=black@0.8:x=w-tw-10:y=h-th-10[hls]`;
     }
     
     const filterComplex = [
       stereoFilter,
       goniometerFilter,
       videoFilterChain,
-      `[v2]fps=1/${segmentDuration},scale=320:180[thumbs]`
+      `[${thumbnailInputForFilter}]fps=1/${segmentDuration},scale=320:180[thumbs]`
     ].filter(Boolean).join(';');
     
     // Handle audio stream mappings with mono stream combination logic
@@ -1025,10 +1032,10 @@ class VideoService {
       '-hls_segment_filename', segmentPattern,
       playlistPath,
       '-map', '[thumbs]',
-      '-ss', thumbnailOffset.toString(),
       '-frames:v', maxThumbnails.toString(),
       '-q:v', '3',
       '-f', 'image2',
+      '-start_number', '0',
       '-y',
       thumbnailPattern
     );
@@ -1524,39 +1531,19 @@ class VideoService {
       const thumbnailsHlsCacheEntry = this.nativeHlsCache && this.nativeHlsCache.get(s3Key);
       
       for (let i = 0; i < segmentCount; i++) {
-        let thumbnailData = null;
+        const thumbnailExists = thumbnailsHlsCacheEntry ? 
+          fsSync.existsSync(path.join(thumbnailsHlsCacheEntry.tempDir, `thumb${i.toString().padStart(3, '0')}.jpg`)) : 
+          false;
         
-        // First, try to get thumbnail from native HLS generation
-        if (thumbnailsHlsCacheEntry) {
-          const thumbnailPath = path.join(thumbnailsHlsCacheEntry.tempDir, `thumb${i.toString().padStart(3, '0')}.jpg`);
-          if (fsSync.existsSync(thumbnailPath)) {
-            try {
-              const thumbnailBuffer = fsSync.readFileSync(thumbnailPath);
-              const base64Data = thumbnailBuffer.toString('base64');
-              thumbnailData = {
-                segmentIndex: i,
-                time: i * segmentDuration + (segmentDuration / 2),
-                data: `data:image/jpeg;base64,${base64Data}`,
-                cached: Date.now(),
-                source: 'native-hls'
-              };
-              console.log(`[Thumbnails] Using native HLS thumbnail for segment ${i}`);
-            } catch (error) {
-              console.warn(`[Thumbnails] Failed to read native thumbnail ${i}:`, error.message);
-            }
-          }
-        }
-        
-        // Fallback to placeholder if native HLS thumbnail not available
-        if (!thumbnailData) {
-          thumbnailData = {
-            segmentIndex: i,
-            time: i * segmentDuration + (segmentDuration / 2),
-            data: null,
-            cached: null,
-            source: 'placeholder'
-          };
-        }
+        const thumbnailData = {
+          segmentIndex: i,
+          time: i * segmentDuration + (segmentDuration / 2),
+          exists: thumbnailExists,
+          url: thumbnailExists ? `/api/video/${encodeURIComponent(s3Key)}/thumb${i.toString().padStart(3, '0')}.jpg` : null,
+          data: null, // Client will fetch individually
+          cached: thumbnailExists ? Date.now() : null,
+          source: thumbnailExists ? 'native-hls' : 'pending'
+        };
         
         thumbnails.push(thumbnailData);
       }
@@ -1796,7 +1783,11 @@ class VideoService {
       
       // Use FFmpeg to extract audio amplitude data
       const ffmpeg = spawn('ffmpeg', [
+        '-analyzeduration', '1M',    // Reduce analysis time for faster startup
+        '-probesize', '2M',          // Reduce probe size for memory efficiency
+        '-threads', '1',             // Single thread for audio processing
         '-i', inputSource,
+        '-vn',                       // Disable video processing completely
         '-filter_complex', audioFilter,
         '-map', '[out]',
         '-f', 'f32le',
@@ -1872,6 +1863,26 @@ class VideoService {
   }
 
   async getEbuR128Analysis(s3Key, startTime = 0, duration = 10) {
+    const cacheKey = `ebur128:${s3Key}:${startTime}:${duration}`;
+    
+    // Check if EBU R128 analysis is already being processed
+    if (this.activeProcesses.has(cacheKey)) {
+      console.log(`[EBU R128] Analysis already in progress for ${s3Key} (${startTime}s-${startTime + duration}s), returning existing promise`);
+      return this.activeProcesses.get(cacheKey);
+    }
+    
+    const analysisPromise = this._getEbuR128AnalysisInternal(s3Key, startTime, duration);
+    this.activeProcesses.set(cacheKey, analysisPromise);
+    
+    try {
+      const result = await analysisPromise;
+      return result;
+    } finally {
+      this.activeProcesses.delete(cacheKey);
+    }
+  }
+
+  async _getEbuR128AnalysisInternal(s3Key, startTime = 0, duration = 10) {
     try {
       const videoInfo = await this.getVideoInfo(s3Key);
       const hasAudio = videoInfo.audio !== null;
@@ -1919,9 +1930,13 @@ class VideoService {
       const ffmpegArgs = [
         '-fflags', '+genpts+igndts',
         '-avoid_negative_ts', 'make_zero',
+        '-analyzeduration', '1M',    // Reduce analysis time for faster startup
+        '-probesize', '2M',          // Reduce probe size for memory efficiency
+        '-threads', '1',             // Single thread for audio analysis
         '-ss', startTime.toString(),
         '-t', duration.toString(),
         '-i', inputSource,
+        '-vn',                       // Disable video processing completely
         '-filter_complex', filterComplex,
         '-f', 'null',
         '-'

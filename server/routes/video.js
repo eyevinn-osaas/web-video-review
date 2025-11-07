@@ -280,6 +280,53 @@ router.get('/:key/thumbnails', async (req, res) => {
   }
 });
 
+// Individual thumbnail file serving - pattern: /video/key/thumb000.jpg  
+router.get('/:key/thumb*', async (req, res) => {
+  try {
+    const key = decodeURIComponent(req.params.key);
+    
+    // Extract index from the path like "thumb000.jpg" -> "000" or "thumb24.jpg" -> "024"
+    const thumbnailPath = req.params[0]; // Contains everything after "thumb"
+    const match = thumbnailPath.match(/^(\d+)\.jpg$/);
+    
+    if (!match) {
+      return res.status(400).json({ error: 'Invalid thumbnail format' });
+    }
+    
+    const index = match[1].padStart(3, '0'); // Ensure 3-digit format like "000"
+    
+    console.log(`[Thumbnail] Serving thumb${index}.jpg for key: ${key}`);
+    console.log(`[Thumbnail] Original request path: ${req.path}`);
+    console.log(`[Thumbnail] Raw thumbnail path param: ${thumbnailPath}`);
+    
+    // Check if we have native HLS cache with this thumbnail
+    if (videoService.nativeHlsCache && videoService.nativeHlsCache.has(key)) {
+      const cacheEntry = videoService.nativeHlsCache.get(key);
+      const thumbnailFilePath = path.join(cacheEntry.tempDir, `thumb${index}.jpg`);
+      
+      console.log(`[Thumbnail] Looking for file: ${thumbnailFilePath}`);
+      
+      if (fs.existsSync(thumbnailFilePath)) {
+        const thumbnailBuffer = fs.readFileSync(thumbnailFilePath);
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        res.send(thumbnailBuffer);
+        console.log(`[Thumbnail] Served thumb${index}.jpg successfully`);
+        return;
+      } else {
+        console.log(`[Thumbnail] File not found: ${thumbnailFilePath}`);
+      }
+    } else {
+      console.log(`[Thumbnail] No HLS cache found for key: ${key}`);
+    }
+    
+    res.status(404).json({ error: 'Thumbnail not found' });
+  } catch (error) {
+    console.error('Error serving thumbnail:', error);
+    res.status(500).json({ error: 'Failed to serve thumbnail' });
+  }
+});
+
 router.get('/:key/waveform', async (req, res) => {
   try {
     const key = decodeURIComponent(req.params.key);

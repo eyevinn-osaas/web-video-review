@@ -15,44 +15,118 @@ function VideoTimeline({ videoInfo, currentTime, onSeek, videoKey, activeAudioTr
 
   useEffect(() => {
     if (videoKey && videoInfo) {
-      // Fetch actual thumbnails from the API
+      // Fetch thumbnail manifest from the API
       const fetchThumbnails = async () => {
         try {
-          console.log('Fetching thumbnails for video:', videoKey);
-          console.log('Video duration:', videoInfo.duration, 'seconds');
-          const thumbnailData = await api.getThumbnails(videoKey, { segmentDuration: 10 });
-          console.log('Received thumbnails:', thumbnailData.length, 'thumbnails');
-          console.log('Expected thumbnails for', videoInfo.duration, 'seconds:', Math.ceil(videoInfo.duration / 10));
-          console.log('First few thumbnail times:', thumbnailData.slice(0, 5).map(t => t.time));
-          setThumbnails(thumbnailData);
+          console.log('Fetching thumbnail manifest for video:', videoKey);
+          const thumbnailManifest = await api.getThumbnails(videoKey, { segmentDuration: 10 });
+          console.log('Received thumbnail manifest:', thumbnailManifest.length, 'entries');
           
-          // If some thumbnails are still missing, set up polling to check for updates
-          const missingThumbnails = thumbnailData.filter(t => !t.data).length;
-          if (missingThumbnails > 0) {
-            console.log(`${missingThumbnails} thumbnails still missing, will poll for updates`);
+          // Initialize thumbnails with manifest info
+          const initialThumbnails = thumbnailManifest.map(thumb => ({
+            ...thumb,
+            data: null, // Will be loaded individually
+            loading: false
+          }));
+          setThumbnails(initialThumbnails);
+          
+          // Load existing thumbnails immediately
+          const existingThumbnails = thumbnailManifest.filter(t => t.exists);
+          console.log(`${existingThumbnails.length} thumbnails available, loading...`);
+          console.log('Existing thumbnail URLs:', existingThumbnails.map(t => t.url));
+          
+          // Load all existing thumbnails
+          existingThumbnails.forEach(async (thumb, index) => {
+            try {
+              const response = await fetch(thumb.url);
+              if (response.ok) {
+                const blob = await response.blob();
+                const reader = new FileReader();
+                reader.onload = () => {
+                  setThumbnails(prev => prev.map(t => 
+                    t.segmentIndex === thumb.segmentIndex 
+                      ? { ...t, data: reader.result, loading: false }
+                      : t
+                  ));
+                };
+                reader.readAsDataURL(blob);
+              }
+            } catch (error) {
+              console.warn(`Failed to load thumbnail ${thumb.segmentIndex}:`, error);
+            }
+          });
+          
+          // Set up polling for missing thumbnails
+          const missingCount = thumbnailManifest.filter(t => !t.exists).length;
+          if (missingCount > 0) {
+            console.log(`${missingCount} thumbnails still generating, will poll for updates`);
             
             const pollInterval = setInterval(async () => {
               try {
-                const updatedThumbnails = await api.getThumbnails(videoKey, { segmentDuration: 10 });
-                const newlyAvailable = updatedThumbnails.filter(t => t.data).length;
-                const previouslyAvailable = thumbnailData.filter(t => t.data).length;
+                const updatedManifest = await api.getThumbnails(videoKey, { segmentDuration: 10 });
+                const newlyAvailable = updatedManifest.filter(t => t.exists);
                 
-                if (newlyAvailable > previouslyAvailable) {
-                  console.log(`Found ${newlyAvailable - previouslyAvailable} new thumbnails`);
-                  setThumbnails(updatedThumbnails);
-                }
+                // Load any newly available thumbnails
+                updatedManifest.forEach(async (thumb) => {
+                  // Check current state and only load if needed
+                  const shouldLoad = await new Promise(resolve => {
+                    setThumbnails(prev => {
+                      const current = prev.find(t => t.segmentIndex === thumb.segmentIndex);
+                      const needsLoading = thumb.exists && current && !current.data && !current.loading;
+                      if (needsLoading) {
+                        // Mark as loading
+                        resolve(true);
+                        return prev.map(t => 
+                          t.segmentIndex === thumb.segmentIndex 
+                            ? { ...t, loading: true, exists: true, url: thumb.url }
+                            : t
+                        );
+                      }
+                      resolve(false);
+                      return prev;
+                    });
+                  });
+                  
+                  if (shouldLoad) {
+                    try {
+                      const response = await fetch(thumb.url);
+                      if (response.ok) {
+                        const blob = await response.blob();
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          setThumbnails(prev => prev.map(t => 
+                            t.segmentIndex === thumb.segmentIndex 
+                              ? { ...t, data: reader.result, loading: false }
+                              : t
+                          ));
+                        };
+                        reader.readAsDataURL(blob);
+                      }
+                    } catch (error) {
+                      console.warn(`Failed to load new thumbnail ${thumb.segmentIndex}:`, error);
+                      setThumbnails(prev => prev.map(t => 
+                        t.segmentIndex === thumb.segmentIndex 
+                          ? { ...t, loading: false }
+                          : t
+                      ));
+                    }
+                  }
+                });
                 
-                // Stop polling when all thumbnails are available
-                if (updatedThumbnails.every(t => t.data)) {
-                  console.log('All thumbnails loaded, stopping poll');
+                // Stop polling when all thumbnails are loaded
+                const allGenerated = updatedManifest.every(t => t.exists);
+                if (allGenerated) {
+                  console.log('All thumbnails generated, stopping poll');
                   clearInterval(pollInterval);
+                } else {
+                  console.log(`Progress: ${newlyAvailable.length}/${updatedManifest.length} thumbnails available`);
                 }
               } catch (error) {
                 console.warn('Thumbnail polling error:', error);
+                clearInterval(pollInterval);
               }
-            }, 2000); // Poll every 2 seconds
+            }, 2000);
             
-            // Clean up interval on unmount or when dependencies change
             return () => clearInterval(pollInterval);
           }
         } catch (error) {
