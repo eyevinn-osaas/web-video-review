@@ -1,6 +1,6 @@
 {
   "name": "web-video-review",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Web application for reviewing broadcast video files from S3 with ffmpeg-powered streaming",
   "main": "server/index.js",
   "scripts": {
@@ -26,7 +26,13 @@
     "nodemon": "^3.0.1",
     "concurrently": "^8.2.1"
   },
-  "keywords": ["video", "streaming", "s3", "ffmpeg", "broadcast"],
+  "keywords": [
+    "video",
+    "streaming",
+    "s3",
+    "ffmpeg",
+    "broadcast"
+  ],
   "author": "Eyevinn Technology AB",
   "license": "MIT"
 }
